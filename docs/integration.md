@@ -119,8 +119,8 @@ pytest tests/contract -q          # 本地参考契约核对
 
 ## 7. 引擎对照(与内网 ImageMatcher)
 
-- 样例集:随包分发 `mobile_auto/samples/`(12 组真实正负样本 + README +
-  samples.json 清单),引擎纯函数为 `mobile_auto.image.match_template`。
+- 样例集:源码树 `tests/fixtures/images/`(12 组真实正负样本 + README +
+  samples.json 清单,随源码交付),引擎纯函数为 `mobile_auto.image.match_template`。
 - 对照步骤:内网侧用同一组样例分别跑本地引擎与 ImageMatcher,比较 ROI、
   分数、NMS 去重与排序;差异记录到工单 13 的验证记录,复用/替换据证据决定。
 - 校准初值见 `mobile_auto/image.py` 模块头与 samples/README.md;调整须记录。

@@ -36,10 +36,6 @@ mobile-auto = "mobile_auto.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/mobile_auto"]
 
-[tool.hatch.build.targets.wheel.force-include]
-# 示例与图像样本随包分发(干净环境安装验收内容)
-"examples" = "mobile_auto/examples"
-"tests/fixtures/images" = "mobile_auto/samples"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

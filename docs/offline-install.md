@@ -8,7 +8,7 @@
 | 组件 | 版本 | 来源/许可 | 说明 |
 | :--- | :--- | :--- | :--- |
 | Python | 3.12.10 | python.org / PSF | 首测版本;内网版本待接入负责人确认 |
-| mobile-auto | 0.1.0 | 本仓库 wheel / 内部 | 含 viewer static、examples、samples |
+| mobile-auto | 0.1.0 | 本仓库源码 / 内部 | 源码树即交付物;viewer static 随 src/,examples 与样本在仓库目录 |
 | uiautomator2 | 3.7.1 | PyPI / MIT | 核心驱动;附 atx-agent 等设备端组件 |
 | adbutils | 2.12.0 | PyPI / MIT | 随 u2 安装,自带 adb.exe(Windows) |
 | Pillow | 13.0.0 | PyPI / MIT-CMU | PNG 编解码 |
@@ -33,14 +33,18 @@
 完全离线内网需预置上述 APK/二进制并保证 u2 能从本地缓存取用,
 安装流程由操作者按内网规范执行。
 
-## 离线安装流程
+## 离线安装流程(源码交付,2026-10-24 决定:不打包 wheel)
 
-1. 在有网环境:`python -m build --wheel` 产出 wheel;
-   `pip download -r requirements-lock.txt -d wheels/` 下载依赖轮子。
-2. 拷贝 wheel + wheels/ + 本仓库 docs/ 至内网。
-3. 内网主机:`python -m venv .venv && .venv/Scripts/python -m pip install --no-index --find-links wheels/ mobile_auto-0.1.0-*.py3-none-any.whl[image,viewer]`
-4. `pip check` 与 `mobile-auto doctor` 验证。
+1. 在有网环境:`pip download -r requirements-lock.txt -d wheels/`
+   下载依赖轮子(含 hatchling,供可编辑安装的构建隔离使用)。
+2. 拷贝**整个源码仓库** + wheels/ 至内网(直接使用源码,不产出、不安装 wheel)。
+3. 内网主机:
+   `python -m venv .venv && .venv/Scripts/python -m pip install --no-index --find-links wheels/ -e ".[image,viewer]"`
+4. `pip check`、`.venv/Scripts/mobile-auto doctor` 与 `pytest tests/unit tests/contract tests/integration -q` 验证。
 5. 设备端组件:首次真机连接由 u2 初始化(或按内网规范预装)。
+
+注:pyproject 仅承载可编辑安装所需的包元数据;不执行 `python -m build`,
+不产出 wheel/sdist(2026-10-24 此前曾验证过 wheel 路径,记录见 docs/validation.md,已不作为交付方式)。
 
 ## 已知限制
 

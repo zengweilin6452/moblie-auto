@@ -74,6 +74,9 @@ python -m pytest tests/device/test_reliability_30x.py -m device --mobile-config 
 - **网页多客户端并发**:WS 上限 2 客户端有单元测试;真人多端并发未实测。
 - **pytest-xdist 并行**:明确不支持(spec Out of Scope),未测。
 
+> 交付方式备注(2026-10-24):经用户决定,本项目不打包 wheel,接入直接使用源码;
+> 下文 build/wheel 验证保留为能力记录,不构成交付要求。
+
 ## 验收结论
 
 - **本地验收:通过**。六项工单验收链(01–13)全部完成;lint/单元/契约/
