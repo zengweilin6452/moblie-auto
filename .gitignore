@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# 本地工具(ADB platform-tools 等体积大且含二进制,不纳入版本库)
+/platform-tools/
+/tools/
+
+# 本地会话配置
+.claude/settings.local.json
