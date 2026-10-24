@@ -161,8 +161,16 @@ def make_session(
         backend_factory=lambda: backend,
         device_enumerator=lambda: {"SERIAL1": "device"} if states is None else states,
         lease_factory=lease_factory,
+        # 单测密闭:视频通道始终启动失败(auto 策略即时回退 u2,不触碰 adb)
+        channel_factory=no_channel_factory,
     )
     return session, backend
+
+
+def no_channel_factory(serial):
+    from mobile_auto.errors import StreamUnavailable
+
+    raise StreamUnavailable("单测禁用视频通道")
 
 
 def make_adapter(

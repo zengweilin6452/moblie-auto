@@ -1,6 +1,5 @@
 """预览视频流化真机 e2e(工单 02):帧率实测、杀 server 回退与恢复。"""
 
-import subprocess
 import time
 
 import pytest

@@ -39,8 +39,11 @@ _TOML_FIELDS = frozenset(
         "wait_timeout",
         "poll_interval",
         "port",
+        "screenshot_source",
     }
 )
+
+_SCREENSHOT_SOURCES = frozenset({"auto", "u2", "scrcpy"})
 _ENV_FIELDS = {
     "device_serial": ENV_DEVICE_SERIAL,
     "app_package": ENV_APP_PACKAGE,
@@ -68,6 +71,8 @@ class MobileConfig:
     wait_timeout: float = 10.0
     poll_interval: float = 0.5
     port: int = 8765
+    # 驱动截图通道:auto=scrcpy 优先、故障回退 u2;u2=强制 u2;scrcpy=强制且不回退
+    screenshot_source: str = "auto"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -98,6 +103,11 @@ class MobileConfig:
             or not 1 <= self.port <= 65535
         ):
             raise _invalid("port", "必须是 1-65535 之间的整数")
+        if self.screenshot_source not in _SCREENSHOT_SOURCES:
+            raise _invalid(
+                "screenshot_source",
+                f"必须是 {' / '.join(sorted(_SCREENSHOT_SOURCES))} 之一",
+            )
 
 
 def _optional_str(value: Any, field_name: str) -> str | None:
@@ -152,6 +162,7 @@ def load_config(
     wait_timeout: Any = _UNSET,
     poll_interval: Any = _UNSET,
     port: Any = _UNSET,
+    screenshot_source: Any = _UNSET,
 ) -> MobileConfig:
     """按 显式参数 > 环境变量 > TOML > 默认值 的优先级合并配置并校验。"""
     toml_data = _read_toml(config_path)
@@ -166,6 +177,7 @@ def load_config(
         "wait_timeout": wait_timeout,
         "poll_interval": poll_interval,
         "port": port,
+        "screenshot_source": screenshot_source,
     }
 
     merged: dict[str, Any] = {}

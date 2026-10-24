@@ -135,7 +135,7 @@ class MobileAdapter:
         template, prepared = self._templates.get(self._store(), target.value)
         source = (template.meta.get("source_width"), template.meta.get("source_height"))
         results = match_prepared(
-            backend.screenshot_png(),
+            self._session.screenshot_bytes(backend),
             prepared,
             confidence=target.confidence,
             region=target.region,
@@ -403,8 +403,11 @@ class MobileAdapter:
         return await self._poll_until(attempt, target)
 
     async def screenshot(self) -> bytes:
-        """新采集画面显式编码为 PNG;不返回缓存帧。"""
-        return await self._call(lambda backend: backend.screenshot_png())
+        """新采集画面显式编码为 PNG;不返回缓存帧。
+
+        通道按配置 screenshot_source 选择(auto=scrcpy 优先、故障回退 u2)。
+        """
+        return await self._call(lambda backend: self._session.screenshot_bytes(backend))
 
     async def close(self) -> None:
         """幂等;仅结束本会话的调度,不停止 App。"""

@@ -34,6 +34,8 @@ from .lease import DeviceLease
 T = TypeVar("T")
 
 _CLOSE_DRAIN_TIMEOUT_SECONDS = 10.0
+_SCRCPY_FAIL_LIMIT = 3  # 连续失败次数达到后降级 u2(plan P1 工单 03)
+_SCRCPY_DEGRADE_SECONDS = 60.0  # 降级持续时长,到期再试一次以探测恢复
 
 
 class SessionState(enum.StrEnum):
@@ -107,11 +109,13 @@ class DeviceSession:
         backend_factory: Callable[[], DeviceBackend] | None = None,
         device_enumerator: Callable[[], dict[str, str]] | None = None,
         lease_factory: Callable[[str], DeviceLease | object] | None = None,
+        channel_factory: Callable[[str], object] | None = None,
     ) -> None:
         self._config = config
         self._backend_factory = backend_factory or U2Backend
         self._enumerator = device_enumerator or enumerate_device_states
         self._lease_factory = lease_factory  # None → 真实 DeviceLease(统一目录)
+        self._channel_factory = channel_factory  # None → 真实 ScrcpyChannel(P1)
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mobile-auto-device"
         )
@@ -126,6 +130,10 @@ class DeviceSession:
         self._outcomes: dict[Future, str] = {}  # 完成操作的固化结局
         self._lease_held = False
         self._tls = threading.local()
+        # scrcpy 截图通道状态(P1 工单 03):仅设备队列线程读写,无需加锁
+        self._scrcpy_channel = None
+        self._scrcpy_failures = 0
+        self._scrcpy_degraded_until = 0.0
 
     @property
     def config(self) -> MobileConfig:
@@ -195,6 +203,55 @@ class DeviceSession:
             self._lease_held = False
             self._state = SessionState.READY
 
+    # ── scrcpy 截图通道(P1 工单 03)─────────────────────────
+
+    def get_or_start_channel(self):
+        """取可用通道,不健康则重建;须在设备队列线程内调用(租约已持有,
+        server 推送与启动属于设备写操作)。"""
+        if self._scrcpy_channel is not None and not self._scrcpy_channel.healthy():
+            self._scrcpy_channel.stop()
+            self._scrcpy_channel = None
+        if self._scrcpy_channel is None:
+            from .scrcpy_channel import ScrcpyChannel
+
+            factory = self._channel_factory or (
+                lambda serial: ScrcpyChannel(serial)
+            )
+            channel = factory(self._serial)
+            channel.start()
+            self._scrcpy_channel = channel
+        return self._scrcpy_channel
+
+    def screenshot_bytes(self, backend) -> bytes:
+        """驱动截图双通道策略(P1 工单 03);在设备队列线程内调用。
+
+        u2=强制 u2;scrcpy=强制 scrcpy 且故障不静默回退;auto=scrcpy 优先,
+        连续失败降级 u2 一段时间后重试探测恢复。返回始终是 PNG 字节,
+        调用方不感知来源。
+        """
+        source = self._config.screenshot_source
+        if source == "u2":
+            return backend.screenshot_png()
+        if (
+            source == "auto"
+            and self._scrcpy_degraded_until > time.monotonic()
+        ):
+            return backend.screenshot_png()
+        try:
+            png = self.get_or_start_channel().capture_png()
+        except Exception:
+            self._scrcpy_failures += 1
+            if self._scrcpy_failures >= _SCRCPY_FAIL_LIMIT:
+                self._scrcpy_degraded_until = (
+                    time.monotonic() + _SCRCPY_DEGRADE_SECONDS
+                )
+            if source == "scrcpy":
+                raise  # 显式选择:故障如实报错,不静默换通道
+            return backend.screenshot_png()
+        self._scrcpy_failures = 0
+        self._scrcpy_degraded_until = 0.0
+        return png
+
     def close(self, timeout: float = _CLOSE_DRAIN_TIMEOUT_SECONDS) -> None:
         """有界排空后关闭;幂等。超时进入 FAULTED 并保留租约(plan 7.3)。
 
@@ -234,6 +291,12 @@ class DeviceSession:
                 self._drain.wait(remaining)
         if backend is not None:
             backend.close()
+        if self._scrcpy_channel is not None:
+            try:
+                self._scrcpy_channel.stop()
+            except Exception:
+                pass
+            self._scrcpy_channel = None
         if self._lease is not None and self._lease_held:
             self._lease.release()
             self._lease_held = False
