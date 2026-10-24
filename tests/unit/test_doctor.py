@@ -5,8 +5,9 @@
 
 import pytest
 
-from mobile_auto import backend_u2, cli
+from mobile_auto import cli
 from mobile_auto.config import load_config
+from mobile_auto.core import backend as backend_u2
 
 ADB_DEVICES_OUTPUT = """\
 * daemon not running; starting now at tcp:5037

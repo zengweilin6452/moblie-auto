@@ -22,13 +22,13 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TypeVar
 
-from .backend_u2 import DeviceBackend, U2Backend, enumerate_device_states
-from .config import MobileConfig
-from .errors import (
+from ..config import MobileConfig
+from ..errors import (
     DeviceBusy,
     DeviceUnavailable,
     SessionFaulted,
 )
+from .backend import DeviceBackend, U2Backend, enumerate_device_states
 from .lease import DeviceLease
 
 T = TypeVar("T")
@@ -212,7 +212,7 @@ class DeviceSession:
             self._scrcpy_channel.stop()
             self._scrcpy_channel = None
         if self._scrcpy_channel is None:
-            from .scrcpy_channel import ScrcpyChannel
+            from ..stream.channel import ScrcpyChannel
 
             factory = self._channel_factory or (
                 lambda serial: ScrcpyChannel(serial)

@@ -110,10 +110,10 @@ class ElementHandle:
 
         if self.owner is None:
             raise StaleHandle("句柄未绑定会话,无法执行操作;请通过 adapter.find_elements 获取")
-        from .selectors import revalidate_handle, revalidate_image_handle
+        from .core.selectors import revalidate_handle, revalidate_image_handle
 
         if self.target.by.value == "image":
-            from .assets import TemplateStore
+            from .imaging.store import TemplateStore
 
             store = TemplateStore(self.owner.config.assets_dir)
 
@@ -142,7 +142,7 @@ class ElementHandle:
     async def input_text(self, text: str) -> None:
         """句柄直接输入:清空并替换;不可编辑目标明确失败。"""
         self._ensure_native("input_text")
-        from .selectors import ensure_editable
+        from .core.selectors import ensure_editable
 
         def use_node(node) -> None:
             ensure_editable(getattr(node, "info", {}) or {})
@@ -153,7 +153,7 @@ class ElementHandle:
 
     async def get_attribute(self, name: str) -> str | tuple[int, int, int, int]:
         self._ensure_native("get_attribute")
-        from .selectors import attribute_value, validate_attribute_name
+        from .core.selectors import attribute_value, validate_attribute_name
 
         validate_attribute_name(name)
         return await self._submit(

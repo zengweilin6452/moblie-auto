@@ -11,7 +11,7 @@ from mobile_auto import (
     UnsupportedOperation,
 )
 from mobile_auto.contracts import Target
-from mobile_auto.selectors import (
+from mobile_auto.core.selectors import (
     NATIVE_LOCATORS,
     parse_u2_selector,
     resolve_single,

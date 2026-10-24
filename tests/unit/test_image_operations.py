@@ -22,7 +22,7 @@ from mobile_auto import (
     Target,
     UnsupportedOperation,
 )
-from mobile_auto.assets import TemplateStore
+from mobile_auto.imaging.store import TemplateStore
 
 SCREEN_W, SCREEN_H, SIZE = 150, 200, 20
 PATTERN = np.random.default_rng(7).integers(0, 255, size=(SIZE, SIZE, 3), dtype=np.uint8)

@@ -7,7 +7,7 @@ from fakes import NullLease
 from fastapi.testclient import TestClient
 
 from mobile_auto import MobileConfig
-from mobile_auto.session import DeviceSession
+from mobile_auto.core.session import DeviceSession
 from mobile_auto.viewer.app import create_app
 from mobile_auto.viewer.store import SnapshotStore
 

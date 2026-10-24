@@ -3,7 +3,7 @@
 import pytest
 
 from mobile_auto import DeviceBusy
-from mobile_auto.lease import DEFAULT_LEASE_DIR, DeviceLease
+from mobile_auto.core.lease import DEFAULT_LEASE_DIR, DeviceLease
 
 
 def test_acquire_release_and_reacquire(tmp_path):

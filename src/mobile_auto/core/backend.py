@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .contracts import Locator
-from .errors import DeviceUnavailable
+from ..contracts import Locator
+from ..errors import DeviceUnavailable
 
 _ADB_TIMEOUT_SECONDS = 10
 
@@ -40,8 +40,15 @@ class DeviceEntry:
         return self.state == "device"
 
 
+_BUNDLED_ADB = Path(__file__).parents[3] / "tools" / "adb" / "adb.exe"
+
+
 def find_adb_binary() -> str | None:
-    """ADB 可见性:优先 uiautomator2 附带的 adbutils 内置二进制,其次 PATH。"""
+    """ADB 可见性:随包 tools/adb 优先(版本确定,37.0.1),其次 adbutils
+    内置二进制,最后 PATH。随包目录不存在时(如 wheel 装到 site-packages)
+    自然回落,不报错。"""
+    if _BUNDLED_ADB.is_file():
+        return str(_BUNDLED_ADB)
     try:
         import adbutils
 

@@ -14,8 +14,8 @@ from mobile_auto import (
     SessionFaulted,
     Target,
 )
-from mobile_auto.lease import DeviceLease
-from mobile_auto.session import SessionState
+from mobile_auto.core.lease import DeviceLease
+from mobile_auto.core.session import SessionState
 
 SMALL = MobileConfig(device_serial="SERIAL1", wait_timeout=2, poll_interval=0.02)
 

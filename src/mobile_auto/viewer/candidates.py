@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 from ..contracts import Locator, Target
-from ..ui_tree import UiNode
+from ..core.ui_tree import UiNode
 
 _RISK_STABLE = "stable"
 _RISK_TEXT = "文本易变:页面文案变化后失效"

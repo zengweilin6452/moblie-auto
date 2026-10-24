@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from mobile_auto import InvalidTemplate, StaleHandle
-from mobile_auto.assets import TemplateStore, validate_logical_path
+from mobile_auto.imaging.store import TemplateStore, validate_logical_path
 
 
 def png_bytes(seed: int, size: int = 24) -> bytes:

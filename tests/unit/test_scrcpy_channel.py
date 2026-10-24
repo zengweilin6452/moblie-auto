@@ -12,9 +12,9 @@ import pytest
 wetest_scrcpy = pytest.importorskip("wetest.scrcpy", reason="stream extra 未安装")
 Action = wetest_scrcpy.Action  # 枚举仅取值,无设备副作用
 
-from mobile_auto import scrcpy_channel  # noqa: E402
 from mobile_auto.errors import StreamUnavailable  # noqa: E402
-from mobile_auto.scrcpy_channel import ScrcpyChannel  # noqa: E402
+from mobile_auto.stream import channel as scrcpy_channel  # noqa: E402
+from mobile_auto.stream.channel import ScrcpyChannel  # noqa: E402
 
 SCREEN_W, SCREEN_H = 1080, 2400
 

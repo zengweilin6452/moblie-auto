@@ -3,7 +3,7 @@
 import cv2
 import numpy as np
 
-from mobile_auto.image import match_template
+from mobile_auto.imaging.engine import match_template
 
 
 def png_bytes(array_rgb: np.ndarray) -> bytes:

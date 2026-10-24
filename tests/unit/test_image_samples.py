@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from mobile_auto.image import match_template
+from mobile_auto.imaging.engine import match_template
 
 FIXTURES = pathlib.Path(__file__).parent.parent / "fixtures" / "images"
 
@@ -63,7 +63,7 @@ _SOURCE_RESOLUTION = (1080, 2400)
 def test_cross_resolution_real_sample(template_name, factor, expected_count):
     import cv2
 
-    from mobile_auto.image import decode_rgb
+    from mobile_auto.imaging.engine import decode_rgb
 
     shot = decode_rgb((FIXTURES / "page-main.png").read_bytes(), what="截图")
     scaled = cv2.resize(shot, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)

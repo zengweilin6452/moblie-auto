@@ -16,17 +16,17 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .backend_u2 import (
+from .config import MobileConfig, load_config
+from .core.backend import (
     AdbProbeError,
     DeviceEntry,
     list_adb_devices,
 )
-from .backend_u2 import (
+from .core.backend import (
     find_adb_binary as find_adb,
 )
-from .config import MobileConfig, load_config
+from .core.session import DeviceSession
 from .errors import ConfigurationError, MobileAutoError
-from .session import DeviceSession
 
 EXIT_OK = 0
 EXIT_ENVIRONMENT = 1

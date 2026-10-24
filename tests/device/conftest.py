@@ -79,7 +79,7 @@ def mobile_session(mobile_config, request):
         rep.failed or (rep.outcome == "skipped" and hasattr(rep, "wasxfail"))
     )
     if failed:
-        from mobile_auto.evidence import collect_failure_evidence
+        from mobile_auto.evidence.collector import collect_failure_evidence
 
         recorder = getattr(request.node, "_evidence_recorder", None)
         try:

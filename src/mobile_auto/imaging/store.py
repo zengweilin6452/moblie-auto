@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from .errors import InvalidTemplate, StaleHandle
-from .image import decode_rgb
+from ..errors import InvalidTemplate, StaleHandle
+from .engine import decode_rgb
 
 MANIFEST_NAME = "manifest.json"
 _SCHEMA_VERSION = 1

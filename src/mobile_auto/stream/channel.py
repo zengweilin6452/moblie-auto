@@ -18,9 +18,9 @@ import threading
 import time
 from pathlib import Path
 
-from .errors import StreamUnavailable
+from ..errors import StreamUnavailable
 
-_ASSETS_DIR = Path(__file__).parent / "scrcpy_assets"
+_ASSETS_DIR = Path(__file__).parent / "assets"
 _DEVICE_ROOT = "/data/local/tmp/ma-scrcpy"
 # server(wetest 版 3.3.2.11)硬编码从 /data/local/tmp/udt/ 加载 turbojpeg
 # (dlopen 报错路径即证据;自定义目录参数无效),so 必须推到该固定路径
@@ -298,7 +298,7 @@ class ScrcpyChannel:
         """注入有限按键(back/home);未知名称报 InvalidTarget 语义错误。"""
         from wetest.scrcpy import KeyCode
 
-        from .errors import InvalidTarget
+        from ..errors import InvalidTarget
 
         mapping = {"back": KeyCode.BACK, "home": KeyCode.HOME}
         if name not in mapping:

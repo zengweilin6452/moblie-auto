@@ -9,12 +9,12 @@ import json
 import pytest
 
 from mobile_auto import MobileConfig, SessionFaulted
-from mobile_auto.evidence import (
+from mobile_auto.core.session import SessionState
+from mobile_auto.evidence.collector import (
     collect_failure_evidence,
     read_evidence_file,
     read_manifest,
 )
-from mobile_auto.session import SessionState
 
 
 class StubSession:

@@ -21,6 +21,13 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..contracts import Locator, Target
+from ..core.selectors import (
+    select_matches,
+    validate_locatable,
+    visible_only,
+)
+from ..core.session import DeviceSession, SessionState
+from ..core.ui_tree import flatten, parse_ui_hierarchy
 from ..errors import (
     AmbiguousTarget,
     ConfigurationError,
@@ -35,14 +42,7 @@ from ..errors import (
     StreamUnavailable,
     UnsupportedOperation,
 )
-from ..scrcpy_channel import ScrcpyChannel
-from ..selectors import (
-    select_matches,
-    validate_locatable,
-    visible_only,
-)
-from ..session import DeviceSession, SessionState
-from ..ui_tree import flatten, parse_ui_hierarchy
+from ..stream.channel import ScrcpyChannel
 from .candidates import candidates_for_node, xpath_candidate
 from .store import Snapshot, SnapshotStore
 
@@ -460,7 +460,7 @@ def create_app(
 
     @app.get("/api/v1/templates")
     async def list_templates(request: Request):
-        from ..assets import TemplateStore
+        from ..imaging.store import TemplateStore
 
         entries = [
             {
@@ -476,7 +476,7 @@ def create_app(
 
     @app.get("/api/v1/templates/{logical:path}/image")
     async def template_image(logical: str, request: Request):
-        from ..assets import TemplateStore
+        from ..imaging.store import TemplateStore
 
         try:
             loaded = TemplateStore(session.config.assets_dir).load(logical)
@@ -930,8 +930,8 @@ def capture_and_query_sync(
 
 
 def _query_payload(backend, session, store, target: Target):
-    from ..assets import TemplateStore
-    from ..image import match_template
+    from ..imaging.engine import match_template
+    from ..imaging.store import TemplateStore
 
     png = backend.screenshot_png()
     screen = backend.screen_size()
@@ -970,8 +970,8 @@ def _crop_and_register(session, snapshot, logical, region, body, expected_old):
     """服务端从保留快照裁剪原始像素,经资产库 create/update 登记。"""
     import numpy as np
 
-    from ..assets import TemplateStore
-    from ..image import decode_rgb
+    from ..imaging.engine import decode_rgb
+    from ..imaging.store import TemplateStore
 
     if (
         not isinstance(region, list)

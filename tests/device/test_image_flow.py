@@ -8,8 +8,8 @@ import cv2
 import pytest
 
 from mobile_auto import Locator, Target
-from mobile_auto.assets import TemplateStore
-from mobile_auto.image import decode_rgb
+from mobile_auto.imaging.engine import decode_rgb
+from mobile_auto.imaging.store import TemplateStore
 
 
 def png_bytes(arr_rgb) -> bytes:

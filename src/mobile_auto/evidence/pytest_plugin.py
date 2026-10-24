@@ -35,7 +35,7 @@ def _find_session(item) -> object | None:
     named = funcargs.get("mobile_session")
     if named is not None:
         return named
-    from .session import DeviceSession
+    from ..core.session import DeviceSession
 
     for value in funcargs.values():
         if isinstance(value, DeviceSession):
@@ -77,7 +77,7 @@ def pytest_runtest_makereport(item, call):
             )
         )
         return
-    from .evidence import collect_failure_evidence
+    from .collector import collect_failure_evidence
 
     try:
         record = collect_failure_evidence(session, str(report.longreprtext))

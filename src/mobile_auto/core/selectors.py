@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
-from .contracts import ElementHandle, Locator, Target
-from .errors import (
+from ..contracts import ElementHandle, Locator, Target
+from ..errors import (
     AmbiguousTarget,
     ElementNotFound,
     InvalidTarget,
@@ -224,7 +224,7 @@ def revalidate_image_handle(backend, handle: ElementHandle, store) -> ImageNode:
     orientation = "portrait" if screen[1] >= screen[0] else "landscape"
     if orientation != handle.orientation:
         raise StaleHandle(f"屏幕方向变化:{orientation}")
-    from .image import match_template
+    from ..imaging.engine import match_template
 
     results = match_template(
         backend.screenshot_png(),

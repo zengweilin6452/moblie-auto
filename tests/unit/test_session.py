@@ -11,7 +11,7 @@ from mobile_auto import (
     MobileConfig,
     SessionFaulted,
 )
-from mobile_auto.session import SessionState, resolve_serial
+from mobile_auto.core.session import SessionState, resolve_serial
 
 
 @pytest.mark.parametrize(

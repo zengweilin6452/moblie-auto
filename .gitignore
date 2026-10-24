@@ -8,9 +8,9 @@ build/
 .pytest_cache/
 .ruff_cache/
 
-# 本地工具(ADB platform-tools 等体积大且含二进制,不纳入版本库)
-/platform-tools/
-/tools/
+# 本地调试散放的工具目录不入库;随包 ADB 在 tools/adb/(2026-10-24 决定入库)
+/tools/*
+!/tools/adb/
 
 # 演示 App 拉取副本与 UI 调试快照(登记信息在 docs/demo-app.md)
 .scratch/demo-apk/

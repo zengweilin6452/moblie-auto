@@ -8,8 +8,8 @@ import numpy as np
 from fakes import FakeBackend, make_session
 
 from mobile_auto import MobileConfig
-from mobile_auto.evidence import collect_failure_evidence
-from mobile_auto.session import SessionState
+from mobile_auto.core.session import SessionState
+from mobile_auto.evidence.collector import collect_failure_evidence
 
 
 class FakeChannel:

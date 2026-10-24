@@ -4,9 +4,9 @@ import cv2
 import numpy as np
 from fakes import FakeBackend, make_adapter
 
-from mobile_auto.assets import TemplateStore
 from mobile_auto.config import MobileConfig
 from mobile_auto.contracts import Locator, Target
+from mobile_auto.imaging.store import TemplateStore
 
 
 def png_bytes(array_rgb: np.ndarray) -> bytes:

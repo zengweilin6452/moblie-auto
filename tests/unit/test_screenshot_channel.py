@@ -7,9 +7,9 @@ from fakes import FakeBackend, make_session
 from PIL import Image
 
 from mobile_auto import MobileAdapter, MobileConfig
-from mobile_auto.assets import TemplateStore
 from mobile_auto.contracts import Locator, Target
 from mobile_auto.errors import StreamUnavailable
+from mobile_auto.imaging.store import TemplateStore
 
 
 class FakeChannel:

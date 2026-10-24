@@ -13,7 +13,7 @@ import os
 import threading
 from pathlib import Path
 
-from .errors import DeviceBusy, DeviceUnavailable
+from ..errors import DeviceBusy, DeviceUnavailable
 
 DEFAULT_LEASE_DIR = Path.home() / ".mobile-auto" / "leases"
 

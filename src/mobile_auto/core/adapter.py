@@ -17,8 +17,8 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any, TypeVar
 
-from .contracts import ElementHandle, Target
-from .errors import (
+from ..contracts import ElementHandle, Target
+from ..errors import (
     ConfigurationError,
     DeviceUnavailable,
     ElementNotFound,
@@ -69,7 +69,7 @@ class _TemplateCache:
 
     def get(self, store, logical: str):
         """返回 (LoadedTemplate, PreparedTemplate);未命中走完整 load 校验。"""
-        from .image import prepare_template
+        from ..imaging.engine import prepare_template
 
         key = (str(store.root), logical)
         version_id = store.list_templates().get(logical, {}).get("version_id")
@@ -119,7 +119,7 @@ class MobileAdapter:
         )
 
     def _store(self):
-        from .assets import TemplateStore
+        from ..imaging.store import TemplateStore
 
         return TemplateStore(self._session.config.assets_dir)
 
@@ -130,7 +130,7 @@ class MobileAdapter:
         清单切换即失效。匹配无结果是空列表——这是查询结果,不是错误;
         非法模板与设备错误分别以 InvalidTemplate / DeviceUnavailable 报告。
         """
-        from .image import match_prepared
+        from ..imaging.engine import match_prepared
 
         template, prepared = self._templates.get(self._store(), target.value)
         source = (template.meta.get("source_width"), template.meta.get("source_height"))

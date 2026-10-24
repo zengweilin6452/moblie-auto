@@ -8,11 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from mobile_auto.lease import DeviceLease
+from mobile_auto.core.lease import DeviceLease
 
 _CHILD = """
 import sys
-from mobile_auto.lease import DeviceLease
+from mobile_auto.core.lease import DeviceLease
 
 lease = DeviceLease(sys.argv[1], lease_dir=sys.argv[2])
 try:

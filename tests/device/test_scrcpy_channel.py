@@ -8,7 +8,7 @@ import time
 import pytest
 
 from mobile_auto.errors import StreamUnavailable
-from mobile_auto.scrcpy_channel import ScrcpyChannel
+from mobile_auto.stream.channel import ScrcpyChannel
 
 pytestmark = pytest.mark.device
 

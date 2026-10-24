@@ -16,8 +16,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .errors import SessionFaulted
-from .session import DeviceSession, SessionState
+from ..core.session import DeviceSession, SessionState
+from ..errors import SessionFaulted
 
 _CAPTURE_TIMEOUT_SECONDS = 5.0
 _SAFE_NAME_RE = re.compile(r"[^0-9A-Za-z_-]")

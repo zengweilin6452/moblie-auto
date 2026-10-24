@@ -13,7 +13,7 @@ import time
 import pytest
 
 from mobile_auto import Locator, Target
-from mobile_auto.assets import TemplateStore
+from mobile_auto.imaging.store import TemplateStore
 
 
 async def _native_once(adapter) -> None:
@@ -64,7 +64,7 @@ def test_image_30x(adapter, mobile_config):
     import cv2
     import numpy as np
 
-    from mobile_auto.image import decode_rgb
+    from mobile_auto.imaging.engine import decode_rgb
 
     frame = decode_rgb(png, what="操作时截图")
     left, top, right, bottom = row.bounds

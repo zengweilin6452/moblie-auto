@@ -2,7 +2,7 @@
 
 import pytest
 
-from mobile_auto.ui_tree import flatten, parse_ui_hierarchy
+from mobile_auto.core.ui_tree import flatten, parse_ui_hierarchy
 
 SAMPLE_XML = """<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy rotation="0">

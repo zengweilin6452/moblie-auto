@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 
 from mobile_auto import Locator, Target
-from mobile_auto.assets import TemplateStore
-from mobile_auto.image import decode_rgb, match_template
+from mobile_auto.imaging.engine import decode_rgb, match_template
+from mobile_auto.imaging.store import TemplateStore
 
 pytestmark = pytest.mark.device
 

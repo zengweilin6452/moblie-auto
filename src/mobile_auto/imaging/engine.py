@@ -37,7 +37,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .errors import InvalidTemplate, MatchOverflow
+from ..errors import InvalidTemplate, MatchOverflow
 
 GRAY_STDDEV_MIN = 2.0
 DEFAULT_CONFIDENCE = 0.90

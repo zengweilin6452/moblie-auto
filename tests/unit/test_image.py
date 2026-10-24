@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from mobile_auto import InvalidTemplate, MatchOverflow
-from mobile_auto import image as image_module
-from mobile_auto.image import MatchResult, decode_rgb, match_template
+from mobile_auto.imaging import engine as image_module
+from mobile_auto.imaging.engine import MatchResult, decode_rgb, match_template
 
 
 def rng(seed: int):

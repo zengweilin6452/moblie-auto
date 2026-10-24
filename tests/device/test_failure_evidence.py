@@ -7,7 +7,7 @@
 import pytest
 
 from mobile_auto import Locator, Target
-from mobile_auto.evidence import read_manifest
+from mobile_auto.evidence.collector import read_manifest
 
 
 @pytest.mark.device

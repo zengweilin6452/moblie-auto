@@ -1,6 +1,6 @@
 """拾取候选生成:五种定位方式、风险标注与 XPath 位置路径。"""
 
-from mobile_auto.ui_tree import parse_ui_hierarchy
+from mobile_auto.core.ui_tree import parse_ui_hierarchy
 from mobile_auto.viewer.candidates import (
     build_xpath,
     candidates_for_node,
