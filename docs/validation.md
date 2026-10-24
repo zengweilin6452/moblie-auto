@@ -16,7 +16,10 @@
 
 ```text
 python -m ruff check src tests examples           → All checks passed!
-python -m pytest tests                            → 228 passed, 10 skipped(设备用例无 --mobile-config 时跳过)
+python -m pytest tests                            → 248 passed, 12 skipped(设备用例无 --mobile-config 时跳过)
+python -m pytest tests/unit tests/contract tests/integration -q
+                                                  → 248 passed(plan §12 口径;contract 7 项 15 方法核对;
+                                                    integration 1 项真实两进程租约争用)
 python -m pytest tests/device -m device --mobile-config tests/device/local.toml
                                                   → 8 passed, 1 xfailed(故意失败取证验证)
 python -m build --wheel                           → 成功;static/examples/samples 齐全
