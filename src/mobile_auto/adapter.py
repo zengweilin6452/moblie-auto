@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any, TypeVar
@@ -17,8 +18,10 @@ from typing import Any, TypeVar
 from .contracts import ElementHandle, Target
 from .errors import (
     ConfigurationError,
+    DeviceUnavailable,
     ElementNotFound,
     InvalidTarget,
+    UnsupportedOperation,
     WaitTimeout,
 )
 from .selectors import (
@@ -26,6 +29,7 @@ from .selectors import (
     attribute_value,
     ensure_editable,
     make_handle,
+    make_image_handle,
     resolve_single,
     scroll_points,
     select_matches,
@@ -39,6 +43,8 @@ T = TypeVar("T")
 
 _PRESS_KEYS = frozenset({"back", "home", "enter", "search", "delete", "recent"})
 _SCROLL_DIRECTIONS = frozenset({"up", "down", "left", "right"})
+
+_IMAGE_FRESH_SECONDS = 1.0  # 采集完成到发送点击的新鲜度上限(plan 6.2)
 
 _MISSING = object()  # 区分"本轮未找到"与找到的空值(如空字符串文本)
 
@@ -71,6 +77,53 @@ class MobileAdapter:
             backend.find_elements(target.by, target.value),
             backend.screen_size(),
         )
+
+    def _store(self):
+        from .assets import TemplateStore
+
+        return TemplateStore(self._session.config.assets_dir)
+
+    def _image_match(self, backend, target: Target):
+        """IMAGE 目标的单轮采集与匹配;返回 (模板元数据, 匹配结果列表)。
+
+        匹配无结果是空列表——这是查询结果,不是错误;非法模板与设备
+        错误分别以 InvalidTemplate / DeviceUnavailable 报告。
+        """
+        from .image import match_template
+
+        template = self._store().load(target.value)
+        results = match_template(
+            backend.screenshot_png(),
+            template.png,
+            confidence=target.confidence,
+            region=target.region,
+        )
+        return template.meta, results
+
+    def _reject_image(self, target: Target, operation: str) -> None:
+        if target.by.value == "image":
+            raise UnsupportedOperation(
+                f"IMAGE 目标不支持 {operation};图像路径仅支持 click/is_visible/"
+                "wait_for/find_elements"
+            )
+
+    def _image_click_transaction(self, backend, target: Target) -> None:
+        """图像点击事务:采集→匹配→选择→检查点→发送,同一队列任务内完成,
+        其他设备请求无法插队(plan 6.2)。采集到发送超过 1 秒则重采集一次,
+        仍过期则失败,不无限重试。"""
+        template_meta, results = self._image_match(backend, target)
+        captured_at = time.monotonic()
+        chosen = resolve_single(results, target)
+        if time.monotonic() - captured_at > _IMAGE_FRESH_SECONDS:
+            template_meta, results = self._image_match(backend, target)
+            captured_at = time.monotonic()
+            chosen = resolve_single(results, target)
+            if time.monotonic() - captured_at > _IMAGE_FRESH_SECONDS:
+                raise DeviceUnavailable(
+                    "图像点击采集持续过期(重采集一次仍超时);请缩小搜索区域或提升阈值"
+                )
+        self._session.send_checkpoint()  # 必测窗口:匹配完成后、点击发送前
+        backend.tap(*chosen.center)
 
     async def _poll_until(self, attempt: Callable[[Any], T], target: Target) -> T:
         """在查找预算内轮询 attempt;歧义立即报,预算耗尽报 ElementNotFound。
@@ -182,6 +235,7 @@ class MobileAdapter:
 
         不读回文本做验证;输入内容不进日志。
         """
+        self._reject_image(target, "input_text")
 
         def attempt(backend):
             try:
@@ -198,6 +252,7 @@ class MobileAdapter:
 
     async def get_attribute(self, target: Target, name: str) -> str | tuple[int, int, int, int]:
         """读取属性:未知属性立即报错;已知缺失返回空串;布尔为 true/false。"""
+        self._reject_image(target, "get_attribute")
         validate_attribute_name(name)
 
         def attempt(backend):
@@ -211,9 +266,16 @@ class MobileAdapter:
 
     async def find_elements(self, target: Target) -> list[ElementHandle]:
         """无序号返回全部可见匹配(树遍历序);有序号返回至多一个。
-        句柄绑定本会话,重用前自动重校验。"""
+        句柄绑定本会话,重用前自动重校验。IMAGE 目标为屏幕匹配结果。"""
 
         def operation(backend):
+            if target.by.value == "image":
+                meta, results = self._image_match(backend, target)
+                screen = backend.screen_size()
+                return [
+                    make_image_handle(target, result, meta, screen, owner=self._session)
+                    for result in select_matches(results, target)
+                ]
             matches = self._locate(backend, target)
             return [
                 make_handle(element, target, owner=self._session)
@@ -223,9 +285,12 @@ class MobileAdapter:
         return await self._call(operation)
 
     async def is_visible(self, target: Target) -> bool:
-        """单次查询,不进行长等待。"""
+        """单次查询,不进行长等待。IMAGE 目标为单轮采集匹配。"""
 
         def operation(backend):
+            if target.by.value == "image":
+                _, results = self._image_match(backend, target)
+                return bool(select_matches(results, target))
             return bool(select_matches(self._locate(backend, target), target))
 
         return await self._call(operation)
@@ -261,7 +326,12 @@ class MobileAdapter:
 
         多匹配无序号立即报歧义;预算耗尽报 ElementNotFound;
         匹配完成后、点击发送前的取消检查点保证被取消时不发出点击。
+        IMAGE 目标走单事务:新采集→匹配→选择→检查点→发送(无轮询,
+        采集过期重采一次,仍过期失败)。
         """
+        if target.by.value == "image":
+            await self._call(lambda backend: self._image_click_transaction(backend, target))
+            return
 
         def attempt(backend):
             try:
@@ -276,6 +346,7 @@ class MobileAdapter:
 
     async def get_text(self, target: Target) -> str:
         """等待单目标可见后返回原生文本;已知缺失归一为空字符串。"""
+        self._reject_image(target, "get_text")
 
         def attempt(backend):
             try:

@@ -63,6 +63,7 @@ class FakeBackend:
         self.deeplinks = []
         self.press_keys = []
         self.swipes = []
+        self.taps = []
         self.find_calls = 0
         self.screenshot_calls = 0
         self.closed = False
@@ -121,6 +122,9 @@ class FakeBackend:
 
     def swipe(self, sx, sy, ex, ey, duration):
         self.swipes.append((sx, sy, ex, ey, duration))
+
+    def tap(self, x, y):
+        self.taps.append((x, y))
 
     def dump_ui(self) -> str:
         return self.ui_xml

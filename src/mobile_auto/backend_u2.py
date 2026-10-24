@@ -130,6 +130,8 @@ class DeviceBackend(Protocol):
 
     def screenshot_png(self) -> bytes: ...
 
+    def tap(self, x: int, y: int) -> None: ...
+
     def app_start(self, package: str, activity: str | None, stop: bool = False) -> None: ...
 
     def open_deeplink(self, uri: str) -> None: ...
@@ -201,6 +203,9 @@ class U2Backend:
 
     def swipe(self, sx: int, sy: int, ex: int, ey: int, duration: float) -> None:
         self._device.swipe(sx, sy, ex, ey, duration=duration)
+
+    def tap(self, x: int, y: int) -> None:
+        self._device.click(x, y)
 
     def dump_ui(self) -> str:
         xml = self._device.dump_hierarchy()

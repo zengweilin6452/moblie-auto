@@ -10,11 +10,11 @@ from mobile_auto import (
     ConfigurationError,
     DeviceUnavailable,
     ElementNotFound,
+    InvalidTemplate,
     Locator,
     MobileConfig,
     SessionFaulted,
     Target,
-    UnsupportedOperation,
 )
 
 
@@ -224,9 +224,10 @@ async def test_goto_without_app_package_is_configuration_error():
         await adapter.goto("")
 
 
-async def test_unsupported_locator_modes_reported_not_silent():
+async def test_image_click_without_registered_template_rejected():
+    """IMAGE 点击未登记模板:显式 InvalidTemplate,不静默或误报不支持。"""
     adapter, _ = make_adapter()
-    with pytest.raises(UnsupportedOperation):
+    with pytest.raises(InvalidTemplate, match="未登记"):
         await adapter.click(Target(Locator.IMAGE, "t.png"))
 
 

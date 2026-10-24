@@ -178,6 +178,85 @@ def revalidate_handle(backend, handle: ElementHandle):
     return node
 
 
+IMAGE_HANDLE_IOU_MIN = 0.5  # 图像句柄位置一致性下限(plan 6.2;校准初值)
+
+
+def make_image_handle(target: Target, result, template_meta: dict, screen, owner=None):
+    """把一次图像匹配固化为句柄:模板摘要、原边界、屏幕尺寸与方向、阈值与区域。"""
+    orientation = "portrait" if screen[1] >= screen[0] else "landscape"
+    return ElementHandle(
+        target=target,
+        bounds=(result.x, result.y, result.width, result.height),
+        image_sha256=template_meta["image_sha256"],
+        screen_size=(int(screen[0]), int(screen[1])),
+        orientation=orientation,
+        owner=owner,
+    )
+
+
+class ImageNode:
+    """图像匹配命中的可操作节点:点击落到结果中心。"""
+
+    def __init__(self, backend, result) -> None:
+        self._backend = backend
+        self._result = result
+
+    @property
+    def bounds(self):
+        return (self._result.x, self._result.y, self._result.width, self._result.height)
+
+    def click(self) -> None:
+        self._backend.tap(*self._result.center)
+
+
+def revalidate_image_handle(backend, handle: ElementHandle, store) -> ImageNode:
+    """图像句柄重用:校验模板摘要、会话、尺寸方向与位置一致性(plan 6.2)。
+
+    任一身份依据无法确认报 StaleHandle,不重定向到新位置。
+    """
+    target = handle.target
+    template = store.load(target.value)
+    if template.sha256 != handle.image_sha256:
+        raise StaleHandle("模板已更新为新版本;请重新查找图像目标")
+    screen = backend.screen_size()
+    if tuple(screen) != tuple(handle.screen_size or ()):
+        raise StaleHandle(f"屏幕尺寸变化:{screen} != {handle.screen_size}")
+    orientation = "portrait" if screen[1] >= screen[0] else "landscape"
+    if orientation != handle.orientation:
+        raise StaleHandle(f"屏幕方向变化:{orientation}")
+    from .image import match_template
+
+    results = match_template(
+        backend.screenshot_png(),
+        template.png,
+        confidence=target.confidence,
+        region=target.region,
+    )
+    matches = select_matches(results, target)
+    if not matches:
+        raise StaleHandle(
+            f"图像目标 {target.value!r} 重新匹配无结果;页面可能已变化"
+        )
+    chosen = matches[0]
+    old = handle.bounds
+    new = (chosen.x, chosen.y, chosen.width, chosen.height)
+    if _iou(old, new) < IMAGE_HANDLE_IOU_MIN:
+        raise StaleHandle(
+            f"图像目标位置偏移(原 {old},现 {new}),不能确认同一目标;请重新查找"
+        )
+    return ImageNode(backend, chosen)
+
+
+def _iou(a: tuple, b: tuple) -> float:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    ix, iy = max(ax, bx), max(ay, by)
+    ix2, iy2 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+    inter = max(0, ix2 - ix) * max(0, iy2 - iy)
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
+
 _BOOL_ATTRIBUTES = ("enabled", "clickable", "selected", "checked")
 _KNOWN_ATTRIBUTES = (
     "text",

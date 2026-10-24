@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from .errors import InvalidTarget
+from .errors import InvalidTarget, UnsupportedOperation
 
 
 class Locator(StrEnum):
@@ -75,9 +75,10 @@ class Target:
 class ElementHandle:
     """查询句柄:某次查询结果的引用(GLOSSARY“查询句柄”)。
 
-    携带重校验依据;过期即失效,不自动指向新节点。重用前重新定位并
-    校验关键属性(className、resourceId、contentDescription;文本易变
-    不参与身份),会话改变或属性不一致报 StaleHandle。
+    携带重校验依据;过期即失效,不自动指向新节点。原生句柄重用前重新
+    定位并校验关键属性(className、resourceId、contentDescription;文本
+    易变不参与身份);图像句柄校验模板摘要、屏幕尺寸方向与位置一致性
+    (plan 6.2)。会话改变或依据不一致报 StaleHandle。
     owner 为绑定会话,仅用于路由操作,不参与相等比较与展示。
     """
 
@@ -87,11 +88,20 @@ class ElementHandle:
     class_name: str = ""
     resource_id: str = ""
     content_desc: str = ""
+    image_sha256: str = ""
+    screen_size: tuple[int, int] | None = None
+    orientation: str = ""
     owner: Any = field(default=None, compare=False, repr=False)
 
     @property
     def identity(self) -> tuple[str, str, str]:
         return (self.class_name, self.resource_id, self.content_desc)
+
+    def _ensure_native(self, operation: str) -> None:
+        if self.target.by.value == "image":
+            raise UnsupportedOperation(
+                f"IMAGE 目标不支持 {operation};图像句柄仅支持 click"
+            )
 
     async def _submit(self, use_node) -> Any:
         import asyncio
@@ -100,11 +110,22 @@ class ElementHandle:
 
         if self.owner is None:
             raise StaleHandle("句柄未绑定会话,无法执行操作;请通过 adapter.find_elements 获取")
-        from .selectors import revalidate_handle
+        from .selectors import revalidate_handle, revalidate_image_handle
 
-        def operation(backend):
-            node = revalidate_handle(backend, self)
-            return use_node(node)
+        if self.target.by.value == "image":
+            from .assets import TemplateStore
+
+            store = TemplateStore(self.owner.config.assets_dir)
+
+            def operation(backend):
+                node = revalidate_image_handle(backend, self, store)
+                return use_node(node)
+
+        else:
+
+            def operation(backend):
+                node = revalidate_handle(backend, self)
+                return use_node(node)
 
         future = self.owner.submit(operation)
         return await asyncio.wrap_future(future)
@@ -115,10 +136,12 @@ class ElementHandle:
 
     async def get_text(self) -> str:
         """句柄直接取文本;节点消失或身份变化报 StaleHandle。"""
+        self._ensure_native("get_text")
         return await self._submit(lambda node: node.text or "")
 
     async def input_text(self, text: str) -> None:
         """句柄直接输入:清空并替换;不可编辑目标明确失败。"""
+        self._ensure_native("input_text")
         from .selectors import ensure_editable
 
         def use_node(node) -> None:
@@ -129,6 +152,7 @@ class ElementHandle:
         await self._submit(use_node)
 
     async def get_attribute(self, name: str) -> str | tuple[int, int, int, int]:
+        self._ensure_native("get_attribute")
         from .selectors import attribute_value, validate_attribute_name
 
         validate_attribute_name(name)
