@@ -38,6 +38,7 @@ packages = ["src/mobile_auto"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_mode = "auto"
 markers = [
     "device: 需要真机与测试配置的测试(无设备不运行、不计为通过)",
 ]

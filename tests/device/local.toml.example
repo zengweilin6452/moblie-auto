@@ -1,0 +1,15 @@
+# 真机测试配置示例:复制为 local.toml 并按设备填写(local.toml 不入库)。
+# 运行:.venv/Scripts/python -m pytest tests/device -m device --mobile-config tests/device/local.toml
+
+# 目标设备序列号(adb devices 中状态为 device 的序列号)。
+# 留空则要求恰好唯一一台已授权在线设备,否则会话报错。
+device_serial = "749622c9"
+
+# 演示 App:系统设置(来源与摘要登记见 docs/demo-app.md)。
+# 显式给出主 activity,保证每次启动都复位到设置主页。
+app_package = "com.android.settings"
+app_activity = ".MainSettings"
+
+# 以下可省略(默认值见 plan 9.1)。
+# wait_timeout = 10.0
+# poll_interval = 0.5

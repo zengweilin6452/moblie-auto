@@ -6,10 +6,12 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from .adapter import MobileAdapter
 from .config import MobileConfig, load_config
-from .contracts import Locator, Target
+from .contracts import ElementHandle, Locator, Target
 from .errors import *  # noqa: F401,F403
 from .errors import __all__ as _errors_all
+from .session import DeviceSession
 
 try:
     __version__ = version("mobile-auto")
@@ -17,7 +19,10 @@ except PackageNotFoundError:  # 源码目录内直接导入时未安装
     __version__ = "0.0.0+unknown"
 
 __all__ = [
+    "DeviceSession",
+    "ElementHandle",
     "Locator",
+    "MobileAdapter",
     "MobileConfig",
     "Target",
     "__version__",

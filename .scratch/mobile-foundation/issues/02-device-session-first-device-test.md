@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 包骨架与 doctor 环境自检
 
-**Status:** open
+**Status:** in-progress
 
 - [ ] 设备会话建立与关闭；无设备、多设备未选、序列号错误、未授权均为明确错误，不误选设备
 - [ ] resource_id 与 text 精确匹配定位；唯一匹配可点击，多匹配无序号报歧义

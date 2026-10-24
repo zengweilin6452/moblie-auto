@@ -12,5 +12,12 @@ build/
 /platform-tools/
 /tools/
 
+# 演示 App 拉取副本与 UI 调试快照(登记信息在 docs/demo-app.md)
+.scratch/demo-apk/
+.scratch/*_ui.xml
+
 # 本地会话配置
 .claude/settings.local.json
+
+# 真机测试本机配置(含设备序列号,不入库;示例见 local.toml.example)
+tests/device/local.toml

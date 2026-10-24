@@ -70,4 +70,17 @@ class Target:
             object.__setattr__(self, "region", tuple(region))
 
 
-__all__ = ["Locator", "Target"]
+@dataclass(frozen=True)
+class ElementHandle:
+    """查询句柄:某次查询结果的引用(GLOSSARY“查询句柄”)。
+
+    携带重校验依据;过期即失效,不自动指向新节点。
+    句柄重用校验随原生定位补全工单(03)交付,当前为查询结果数据。
+    """
+
+    target: Target
+    bounds: tuple[int, int, int, int]
+    text: str = ""
+
+
+__all__ = ["ElementHandle", "Locator", "Target"]

@@ -5,7 +5,7 @@
 
 import pytest
 
-from mobile_auto import cli
+from mobile_auto import backend_u2, cli
 from mobile_auto.config import load_config
 
 ADB_DEVICES_OUTPUT = """\
@@ -36,7 +36,7 @@ def full_versions(**extra):
 
 
 def devices_from_output(output):
-    return lambda path: cli.parse_adb_devices(output)
+    return lambda path: backend_u2.parse_adb_devices(output)
 
 
 def run_report(*, versions=None, adb="/fake/adb.exe", devices=None, **kwargs):
@@ -52,7 +52,7 @@ def run_report(*, versions=None, adb="/fake/adb.exe", devices=None, **kwargs):
 
 
 def test_parse_adb_devices_distinguishes_states():
-    entries = cli.parse_adb_devices(ADB_DEVICES_OUTPUT)
+    entries = backend_u2.parse_adb_devices(ADB_DEVICES_OUTPUT)
     assert [(e.serial, e.state) for e in entries] == [
         ("ABC123", "device"),
         ("DEF456", "unauthorized"),
@@ -62,7 +62,7 @@ def test_parse_adb_devices_distinguishes_states():
 
 
 def test_parse_adb_devices_empty_output():
-    assert cli.parse_adb_devices("List of devices attached\n") == []
+    assert backend_u2.parse_adb_devices("List of devices attached\n") == []
 
 
 def test_list_adb_devices_issues_exactly_one_readonly_command():
@@ -73,7 +73,7 @@ def test_list_adb_devices_issues_exactly_one_readonly_command():
         calls.append(cmd)
         return FakeCompleted(0, ADB_DEVICES_OUTPUT)
 
-    entries = cli.list_adb_devices("/fake/adb.exe", runner=fake_runner)
+    entries = backend_u2.list_adb_devices("/fake/adb.exe", runner=fake_runner)
     assert calls == [["/fake/adb.exe", "devices"]]
     assert [e.serial for e in entries] == ["ABC123", "DEF456", "GHI789"]
 
@@ -89,8 +89,8 @@ def test_list_adb_devices_nonzero_exit_raises_probe_error():
     def fake_runner(cmd, **kwargs):
         return FakeCompleted(1, "", stderr="adb: device offline")
 
-    with pytest.raises(cli.AdbProbeError, match="退出码 1"):
-        cli.list_adb_devices("/fake/adb.exe", runner=fake_runner)
+    with pytest.raises(backend_u2.AdbProbeError, match="退出码 1"):
+        backend_u2.list_adb_devices("/fake/adb.exe", runner=fake_runner)
 
 
 def test_healthy_environment_passes_without_device_warnings(tmp_path):
@@ -142,7 +142,7 @@ def test_missing_adb_fails(tmp_path):
 
 def test_adb_probe_failure_fails(tmp_path):
     def failing_lister(path):
-        raise cli.AdbProbeError("无法执行 adb(超时)")
+        raise backend_u2.AdbProbeError("无法执行 adb(超时)")
 
     report = run_report(devices=failing_lister)
     assert report.exit_code == 1
