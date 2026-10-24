@@ -27,6 +27,10 @@
   覆盖正样本下限,与负样本上限 0.348 之间余量 ≥0.5。
   方差近零的通道对显式定义(见 _channel_ncc),不依赖未定义的 0/0。
 - 坐标容差 2 像素:合成样本验收坐标的中心容差
+- 采集位置先验(V2 P4b):capture_center 存在且未显式指定 region 时,
+  先在预测中心 ± max(模板宽×期望尺度, 150px) 的预测区域搜索,命中即
+  返回(多实例语义为"预测区域内的实例"),未命中回退全区域;归一化
+  语义与换算见 capture_center_from_region/validate_capture_center
 """
 
 from __future__ import annotations
@@ -57,6 +61,9 @@ _SCALE_COARSE_STEP = 0.05  # 粗扫步长
 _SCALE_FINE_STEP = 0.01  # 细扫步长(粗扫最优邻域)
 _SCALE_SEARCH_LONG_EDGE = 800  # 粗细扫在长边不超过此值的降采样图上进行
 _SCALE_TEMPLATE_MIN = 10  # 缩放后模板任一边低于此像素则跳过该尺度
+
+# V2 P4b 采集位置先验(capture_center 存在时先在预测区域搜索,未命中回退全区域)
+_PRIOR_MARGIN_MIN = 150  # 预测区域最小边距(px,当前分辨率;Airtest DEVIATION 同量级)
 
 
 @dataclass(frozen=True)
@@ -158,6 +165,46 @@ def prepare_template(template_png: bytes, *, what: str = "模板") -> PreparedTe
     )
 
 
+def validate_capture_center(value) -> tuple[float, float] | None:
+    """校验采集中心归一化偏移:None 或两个有限数值,非法即拒绝不静默忽略。
+
+    资产 meta 与 API 参数共用;返回归一化为 float 二元组。
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)):
+        raise InvalidTemplate(f"capture_center 必须是 [x, y] 两个有限数值:{value!r}")
+    try:
+        parts = tuple(value)
+    except TypeError:
+        raise InvalidTemplate(
+            f"capture_center 必须是 [x, y] 两个有限数值:{value!r}"
+        ) from None
+    if len(parts) != 2 or any(
+        isinstance(v, bool)
+        or not isinstance(v, (int, float))
+        or not math.isfinite(v)
+        for v in parts
+    ):
+        raise InvalidTemplate(f"capture_center 必须是 [x, y] 两个有限数值:{value!r}")
+    return float(parts[0]), float(parts[1])
+
+
+def capture_center_from_region(
+    region: tuple[int, int, int, int], frame_size: tuple[int, int]
+) -> tuple[float, float]:
+    """框选区域中心 → 采集中心归一化偏移(P4b 采集侧换算)。
+
+    相对屏幕中心、两轴都按屏幕高折算(Airtest record_pos 同语义):
+    宽高比一致时预测点随分辨率等比移动,横竖屏翻转后仍落在原方位。
+    """
+    rx, ry, rw, rh = region
+    width, height = frame_size
+    nx = (rx + rw / 2 - width / 2) / height
+    ny = (ry + rh / 2 - height / 2) / height
+    return round(nx, 6), round(ny, 6)
+
+
 def match_template(
     screenshot_png: bytes,
     template_png: bytes,
@@ -165,6 +212,7 @@ def match_template(
     confidence: float | None = None,
     region: tuple[int, int, int, int] | None = None,
     source_resolution: tuple[int, int] | None = None,
+    capture_center: tuple[float, float] | None = None,
 ) -> list[MatchResult]:
     """在截图(或其搜索区域)内匹配模板,返回全截图坐标的匹配结果。
 
@@ -173,6 +221,11 @@ def match_template(
 
     source_resolution 为模板采集时的屏幕分辨率(P4a):与当前截图不一致
     时自动启用有界多尺度搜索;一致或缺省为单尺度,行为与 v1 相同。
+
+    capture_center 为模板采集时中心点的归一化偏移(P4b,由
+    capture_center_from_region 产生):提供且未显式指定 region 时,先在
+    预测区域内搜索,命中即返回;未命中回退全区域——"找不到就是找不到"
+    的语义不变,只是搜索顺序。显式 region 优先于先验。
     """
     threshold = (
         DEFAULT_CONFIDENCE if confidence is None else _validate_confidence(confidence)
@@ -184,6 +237,7 @@ def match_template(
         threshold,
         region,
         source_resolution,
+        capture_center,
     )
 
 
@@ -194,6 +248,7 @@ def match_prepared(
     confidence: float | None = None,
     region: tuple[int, int, int, int] | None = None,
     source_resolution: tuple[int, int] | None = None,
+    capture_center: tuple[float, float] | None = None,
 ) -> list[MatchResult]:
     """match_template 的免重复解码入口:模板已通过 prepare_template 校验。"""
     threshold = (
@@ -205,6 +260,7 @@ def match_prepared(
         threshold,
         region,
         source_resolution,
+        capture_center,
     )
 
 
@@ -214,6 +270,29 @@ def _match_prepared(
     threshold: float,
     region: tuple[int, int, int, int] | None,
     source_resolution: tuple[int, int] | None = None,
+    capture_center: tuple[float, float] | None = None,
+) -> list[MatchResult]:
+    center = validate_capture_center(capture_center)
+    if center is not None and region is None:
+        prior = _prior_region(
+            screenshot.shape, template, source_resolution, center
+        )
+        if prior is not None:
+            results = _match_region(
+                screenshot, template, threshold, prior, source_resolution
+            )
+            if results:
+                return results
+            # 预测区域未命中:回退全区域,找不到就是找不到
+    return _match_region(screenshot, template, threshold, region, source_resolution)
+
+
+def _match_region(
+    screenshot: np.ndarray,
+    template: PreparedTemplate,
+    threshold: float,
+    region: tuple[int, int, int, int] | None,
+    source_resolution: tuple[int, int] | None,
 ) -> list[MatchResult]:
     rx, ry, rw, rh = _validate_region(region, (screenshot.shape[1], screenshot.shape[0]))
     search = screenshot[ry : ry + rh, rx : rx + rw]
@@ -271,6 +350,37 @@ def _match_prepared(
         )
     results.sort(key=lambda m: (m.y, m.x))
     return results
+
+
+def _prior_region(
+    shape: tuple[int, ...],
+    template: PreparedTemplate,
+    source_resolution: tuple[int, int] | None,
+    center: tuple[float, float],
+) -> tuple[int, int, int, int] | None:
+    """采集位置先验的预测搜索区域(P4b):预测中心 ± max(模板宽×尺度, 150px),
+    裁剪进截图边界;裁剪后放不下模板则放弃先验,交给全区域路径处理。
+
+    尺度取期望比例 s0(与 P4a 同一换算):跨分辨率时模板在当前屏上的
+    显示宽度决定边距。返回 None 表示几何上无法构成有效预测区域。
+    """
+    height, width = shape[:2]
+    tw, th = template.rgb.shape[1], template.rgb.shape[0]
+    s0 = 1.0
+    if source_resolution is not None:
+        source = (int(source_resolution[0]), int(source_resolution[1]))
+        if source != (width, height):
+            s0 = _expected_scale((width, height), source)
+    margin = max(round(tw * s0), _PRIOR_MARGIN_MIN)
+    pcx = width / 2 + center[0] * height
+    pcy = height / 2 + center[1] * height
+    x0 = max(0, int(round(pcx - margin)))
+    y0 = max(0, int(round(pcy - margin)))
+    x1 = min(width, int(round(pcx + margin)))
+    y1 = min(height, int(round(pcy + margin)))
+    if x1 - x0 < tw or y1 - y0 < th:
+        return None
+    return x0, y0, x1 - x0, y1 - y0
 
 
 def _local_peaks(scores: np.ndarray, threshold: float) -> list[tuple[int, int, float]]:

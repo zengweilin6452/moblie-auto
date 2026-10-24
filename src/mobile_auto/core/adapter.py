@@ -131,7 +131,7 @@ class MobileAdapter:
         清单切换即失效。匹配无结果是空列表——这是查询结果,不是错误;
         非法模板与设备错误分别以 InvalidTemplate / DeviceUnavailable 报告。
         """
-        from ..imaging.engine import match_prepared
+        from ..imaging.engine import match_prepared, validate_capture_center
 
         template, prepared = self._templates.get(self._store(), target.value)
         source = (template.meta.get("source_width"), template.meta.get("source_height"))
@@ -142,6 +142,9 @@ class MobileAdapter:
             region=target.region,
             source_resolution=(
                 source if all(isinstance(v, int) for v in source) else None
+            ),
+            capture_center=validate_capture_center(
+                template.meta.get("capture_center")
             ),
         )
         return template.meta, results

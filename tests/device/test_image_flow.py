@@ -8,7 +8,7 @@ import cv2
 import pytest
 
 from mobile_auto import Locator, Target
-from mobile_auto.imaging.engine import decode_rgb
+from mobile_auto.imaging.engine import capture_center_from_region, decode_rgb
 from mobile_auto.imaging.store import TemplateStore
 
 
@@ -32,6 +32,9 @@ async def test_image_template_click_business_flow(adapter, mobile_config):
     x1, y1 = min(1080, right + 60), min(2400, bottom + 15)
     frame = decode_rgb(png, what="操作时截图")
     template_png = png_bytes(frame[y0:y1, x0:x1])
+    # P4b:登记采集中心,匹配走预测区域优先(30 次基线同源覆盖)
+    region = [x0, y0, x1 - x0, y1 - y0]
+    capture_center = capture_center_from_region(region, (frame.shape[1], frame.shape[0]))
 
     store = TemplateStore(mobile_config.assets_dir)
     logical = "demo/wlan-target.png"
@@ -45,6 +48,7 @@ async def test_image_template_click_business_flow(adapter, mobile_config):
             source_height=2400,
             orientation="portrait",
             app_package="com.android.settings",
+            capture_center=capture_center,
         )
     else:
         loaded = store.create(
@@ -54,6 +58,7 @@ async def test_image_template_click_business_flow(adapter, mobile_config):
             source_height=2400,
             orientation="portrait",
             app_package="com.android.settings",
+            capture_center=capture_center,
         )
     assert loaded.width == x1 - x0
 

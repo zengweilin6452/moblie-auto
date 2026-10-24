@@ -64,7 +64,7 @@ def test_image_30x(adapter, mobile_config):
     import cv2
     import numpy as np
 
-    from mobile_auto.imaging.engine import decode_rgb
+    from mobile_auto.imaging.engine import capture_center_from_region, decode_rgb
 
     frame = decode_rgb(png, what="操作时截图")
     left, top, right, bottom = row.bounds
@@ -84,6 +84,9 @@ def test_image_30x(adapter, mobile_config):
         source_height=2400,
         orientation="portrait",
         app_package="com.android.settings",
+        capture_center=capture_center_from_region(
+            region, (frame.shape[1], frame.shape[0])
+        ),
     )
 
     results = []

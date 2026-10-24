@@ -33,9 +33,51 @@ def test_create_registers_version_and_load_verifies(tmp_path):
     loaded = store.create("buttons/confirm.png", png, orientation="portrait", **CAPTURE)
     assert loaded.logical == "buttons/confirm.png"
     assert loaded.png == png
-    assert loaded.meta["schema_version"] == 1
+    assert loaded.meta["schema_version"] == 2
     assert loaded.meta["capture_time"]
+    assert "capture_center" not in loaded.meta  # 未提供时不含该字段(v1 兼容)
     assert store.list_templates()["buttons/confirm.png"]["version_id"] == loaded.version_id
+
+
+def test_create_with_capture_center_roundtrip(tmp_path):
+    """P4b:capture_center 写入 meta 并随 load 返回;JSON 落盘为列表。"""
+    store = make_store(tmp_path)
+    loaded = store.create(
+        "a.png", png_bytes(1), capture_center=(0.25, -0.5), **CAPTURE
+    )
+    assert loaded.meta["capture_center"] == [0.25, -0.5]
+    on_disk = json.loads(
+        (tmp_path / "assets" / "versions" / loaded.version_id / "meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert on_disk["capture_center"] == [0.25, -0.5]
+    assert store.load("a.png").meta["capture_center"] == [0.25, -0.5]
+
+
+@pytest.mark.parametrize("bad", ["x", 5, [1, 2, 3], [1], (0.1,), [float("nan"), 0]])
+def test_create_rejects_bad_capture_center(tmp_path, bad):
+    store = make_store(tmp_path)
+    with pytest.raises(InvalidTemplate, match="capture_center"):
+        store.create("a.png", png_bytes(2), capture_center=bad, **CAPTURE)
+    assert store.list_templates() == {}  # 失败登记不留半成品
+
+
+def test_legacy_meta_without_capture_center_loads(tmp_path):
+    """schema v1 旧模板(无 capture_center)加载不受影响;手改非法值拒绝。"""
+    store = make_store(tmp_path)
+    loaded = store.create("a.png", png_bytes(2), capture_center=(0.1, 0.1), **CAPTURE)
+    meta_path = tmp_path / "assets" / "versions" / loaded.version_id / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    del meta["capture_center"]
+    meta["schema_version"] = 1
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    assert "capture_center" not in store.load("a.png").meta
+
+    meta["capture_center"] = "garbage"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(InvalidTemplate, match="capture_center"):
+        store.load("a.png")
 
 
 def test_create_rejects_duplicate_name(tmp_path):

@@ -4,6 +4,7 @@
   phases   合成 1080x2340 截图的分阶段耗时(性能预算依据)
   samples  真实样本在各匹配位置的门分数(颜色门校准依据)
   crossres 跨分辨率(有界多尺度)路径耗时与命中
+  prior    采集位置先验:全屏 vs 先验命中 vs 未命中回退(P4b)
 
 用法:.venv/Scripts/python.exe scripts/bench_image.py <子命令>
 验收记录引用本脚本输出;不做 CI 时间断言(易抖动)。
@@ -22,7 +23,7 @@ import numpy as np
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from mobile_auto import image as img  # noqa: E402
+from mobile_auto.imaging import engine as img  # noqa: E402
 
 FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "images"
 
@@ -116,9 +117,56 @@ def bench_crossres() -> None:
                   f"{dt:.0f} ms/次, {len(results)} 结果")
 
 
+def bench_prior() -> None:
+    """P4b 采集位置先验:同分辨率下全屏搜索 vs 先验命中 vs 先验未命中回退。
+
+    合成 1080x2340 截图 + 96x96 UI 形态模板,采集位置取屏幕右下象限,
+    未命中场景把模板放在对角(预测区域外),命中场景含无先验对照。
+    """
+    rng = np.random.default_rng(11)
+    screen = cv2.GaussianBlur(
+        rng.integers(0, 255, size=(2340, 1080, 3), dtype=np.uint8), (0, 0), 3.0
+    )
+    center_region = (700, 1500, 96, 96)  # 采集位置:屏幕右下象限
+    cx, cy = 700 + 48, 1500 + 48
+    patch = screen[1500:1596, 700:796].copy()
+    shot_png, tpl_png = png_bytes(screen), png_bytes(patch)
+    capture_center = img.capture_center_from_region(center_region, (1080, 2340))
+
+    def timed(fn, runs=5):
+        fn()  # 预热
+        t0 = time.perf_counter()
+        for _ in range(runs):
+            result = fn()
+        return (time.perf_counter() - t0) / runs * 1000, result
+
+    full_ms, full = timed(
+        lambda: img.match_template(shot_png, tpl_png)
+    )
+    prior_ms, prior = timed(
+        lambda: img.match_template(shot_png, tpl_png, capture_center=capture_center)
+    )
+
+    far = cv2.GaussianBlur(
+        rng.integers(0, 255, size=(2340, 1080, 3), dtype=np.uint8), (0, 0), 3.0
+    )
+    far[300:396, 100:196] = patch  # 对角:预测区域外,先验必未命中
+    far_png = png_bytes(far)
+    fallback_ms, fallback = timed(
+        lambda: img.match_template(far_png, tpl_png, capture_center=capture_center)
+    )
+
+    print(f"截图 1080x2340 + 96x96 模板,采集中心 ({cx},{cy}):")
+    print(f"  无先验全屏        {full_ms:7.1f} ms/次,{len(full)} 结果")
+    print(f"  先验命中          {prior_ms:7.1f} ms/次,{len(prior)} 结果")
+    print(f"  先验未命中(回退) {fallback_ms:7.1f} ms/次,{len(fallback)} 结果")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["phases", "samples", "crossres"])
+    parser.add_argument(
+        "command", choices=["phases", "samples", "crossres", "prior"]
+    )
     match parser.parse_args().command:
         case "phases":
             bench_phases()
@@ -126,6 +174,8 @@ def main() -> None:
             bench_samples()
         case "crossres":
             bench_crossres()
+        case "prior":
+            bench_prior()
 
 
 if __name__ == "__main__":

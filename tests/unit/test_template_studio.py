@@ -32,6 +32,24 @@ def test_create_template_crops_server_snapshot(client):
     assert any(t["logical"] == "studio/target.png" for t in listed)
 
 
+def test_create_writes_capture_center_from_region(client):
+    """P4b:studio 登记时自动写入采集中心(区域中心相对快照中心的归一化偏移)。"""
+    from mobile_auto.imaging.store import TemplateStore
+
+    http, session, _ = client
+    snap = http.post("/api/v1/snapshots", json={}).json()
+    http.post(
+        "/api/v1/templates",
+        json={
+            "snapshot_id": snap["snapshot_id"],
+            "logical": "studio/prior.png",
+            "region": [10, 20, 30, 30],  # 快照 150x200:中心 (25, 35)
+        },
+    )
+    meta = TemplateStore(session.config.assets_dir).load("studio/prior.png").meta
+    assert meta["capture_center"] == [-0.25, -0.325]  # ((25-75)/200, (35-100)/200)
+
+
 def test_create_duplicate_conflict_then_confirmed_update(client):
     http, _, _ = client
     snap = http.post("/api/v1/snapshots", json={}).json()

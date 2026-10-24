@@ -1167,7 +1167,7 @@ def capture_and_query_sync(
 
 
 def _query_payload(backend, session, store, target: Target):
-    from ..imaging.engine import match_template
+    from ..imaging.engine import match_template, validate_capture_center
     from ..imaging.store import TemplateStore
 
     png = backend.screenshot_png()
@@ -1175,8 +1175,21 @@ def _query_payload(backend, session, store, target: Target):
     scores = None
     if target.by.value == "image":
         template = TemplateStore(session.config.assets_dir).load(target.value)
+        source = (
+            template.meta.get("source_width"),
+            template.meta.get("source_height"),
+        )
         results = match_template(
-            png, template.png, confidence=target.confidence, region=target.region
+            png,
+            template.png,
+            confidence=target.confidence,
+            region=target.region,
+            source_resolution=(
+                source if all(isinstance(v, int) for v in source) else None
+            ),
+            capture_center=validate_capture_center(
+                template.meta.get("capture_center")
+            ),
         )
         chosen = select_matches(results, target)
         scores = [round(r.confidence, 6) for r in chosen]
@@ -1204,10 +1217,14 @@ def _query_payload(backend, session, store, target: Target):
 
 
 def _crop_and_register(session, snapshot, logical, region, body, expected_old):
-    """服务端从保留快照裁剪原始像素,经资产库 create/update 登记。"""
+    """服务端从保留快照裁剪原始像素,经资产库 create/update 登记。
+
+    采集中心(P4b)由裁剪区域相对快照中心换算并自动写入 meta,
+    匹配侧据此先在预测区域搜索(未命中回退全区域)。
+    """
     import numpy as np
 
-    from ..imaging.engine import decode_rgb
+    from ..imaging.engine import capture_center_from_region, decode_rgb
     from ..imaging.store import TemplateStore
 
     if (
@@ -1225,6 +1242,7 @@ def _crop_and_register(session, snapshot, logical, region, body, expected_old):
     ok, buf = _cv2_imencode(crop)
     if not ok:
         raise InvalidTemplate("模板编码失败")
+    capture_center = capture_center_from_region(region, (w, h))
     store = TemplateStore(session.config.assets_dir)
     if expected_old is None:
         return store.create(
@@ -1235,6 +1253,7 @@ def _crop_and_register(session, snapshot, logical, region, body, expected_old):
             orientation=snapshot.orientation,
             app_package=session.config.app_package or "",
             note=str(body.get("note") or ""),
+            capture_center=capture_center,
         )
     return store.update(
         logical,
@@ -1245,6 +1264,7 @@ def _crop_and_register(session, snapshot, logical, region, body, expected_old):
         orientation=snapshot.orientation,
         app_package=session.config.app_package or "",
         note=str(body.get("note") or ""),
+        capture_center=capture_center,
     )
 
 

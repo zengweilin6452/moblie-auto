@@ -3,12 +3,16 @@
 布局(资产根目录 assets_dir 下):
   manifest.json                     清单:逻辑名 → 当前版本(原子替换)
   versions/<version_id>/image.png   版本图片(不可变)
-  versions/<version_id>/meta.json   版本元数据(schema_version=1)
+  versions/<version_id>/meta.json   版本元数据(schema_version=2)
 
 不变量:图片与元数据成对完整写入并校验通过后,清单才经 os.replace
 原子切换;任一步失败旧版本保持可见,不存在"新图片配旧摘要"的中间状态。
 更新在资产级文件锁内先校验旧摘要(乐观锁)。旧版本与证据永不自动删除。
 运行时不编造采集环境;无元数据的旧模板经 create 显式登记后使用。
+
+schema v2(P4b):meta 增可选 capture_center(采集中心相对屏幕中心的
+归一化偏移,engine.capture_center_from_region 产生);旧模板无此字段
+时匹配自动退化为全区域搜索,前向兼容。
 """
 
 from __future__ import annotations
@@ -24,10 +28,10 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from ..errors import DuplicateTemplate, InvalidTemplate, StaleHandle
-from .engine import decode_rgb
+from .engine import decode_rgb, validate_capture_center
 
 MANIFEST_NAME = "manifest.json"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _ID_RE = re.compile(r"[0-9a-f]{32}")
 _ORIENTATIONS = ("portrait", "landscape")
 
@@ -108,6 +112,7 @@ class TemplateStore:
             )
         if meta.get("image_sha256") != entry.get("image_sha256"):
             raise InvalidTemplate(f"模板 {logical} 清单摘要与版本元数据不一致")
+        validate_capture_center(meta.get("capture_center"))  # v2 字段,非法即拒绝
         return LoadedTemplate(
             logical=logical,
             version_id=version_id,
@@ -130,20 +135,25 @@ class TemplateStore:
         orientation: str = "portrait",
         app_package: str = "",
         note: str = "",
+        capture_center: tuple[float, float] | None = None,
     ) -> LoadedTemplate:
         """登记新模板(也是旧模板的专门导入步骤);同名默认拒绝。
 
+        capture_center(P4b,可选):采集中心归一化偏移,提供时写入 meta,
+        匹配侧先在预测区域搜索;缺省为全区域搜索,行为与 v1 相同。
         同名是冲突(409 语义),区别于其他模板输入非法(422);两者同为
         InvalidTemplate 子类,按 InvalidTemplate 捕获的既有调用方不受影响。
         """
         logical = validate_logical_path(logical)
+        capture_center = validate_capture_center(capture_center)
         with self._asset_lock():
             if logical in self._read_manifest()["templates"]:
                 raise DuplicateTemplate(
                     f"同名模板已存在:{logical};更新须显式提供旧版本摘要"
                 )
             version = self._build_version(logical, png, source_width, source_height,
-                                          orientation, app_package, note)
+                                          orientation, app_package, note,
+                                          capture_center)
             self._write_version_files(version)
             self._switch_manifest(logical, version, previous=None)
         return self.load(logical)
@@ -159,12 +169,16 @@ class TemplateStore:
         orientation: str = "portrait",
         app_package: str = "",
         note: str = "",
+        capture_center: tuple[float, float] | None = None,
     ) -> LoadedTemplate:
         """更新为新版本:锁内校验旧摘要,成对写入校验后清单才原子切换。
 
+        capture_center 语义同 create;不提供时新版本 meta 不含该字段
+        (继承须显式重新传入,不静默沿用旧值)。
         摘要与当前版本不符报 StaleHandle(冲突);任一步失败旧版本保持可见。
         """
         logical = validate_logical_path(logical)
+        capture_center = validate_capture_center(capture_center)
         if not re.fullmatch(r"[0-9a-f]{64}", expected_old_sha256 or ""):
             raise InvalidTemplate("expected_old_sha256 必须是 64 位十六进制摘要")
         with self._asset_lock():
@@ -177,7 +191,8 @@ class TemplateStore:
                     f"(当前 {entry['image_sha256'][:12]}…)"
                 )
             version = self._build_version(logical, png, source_width, source_height,
-                                          orientation, app_package, note)
+                                          orientation, app_package, note,
+                                          capture_center)
             self._write_version_files(version)
             self._switch_manifest(logical, version, previous=entry)
         return self.load(logical)
@@ -185,30 +200,33 @@ class TemplateStore:
     # ── 内部 ─────────────────────────────────────────────────
 
     def _build_version(self, logical, png, source_width, source_height,
-                       orientation, app_package, note) -> dict:
+                       orientation, app_package, note, capture_center=None) -> dict:
         decoded = decode_rgb(png, what=f"模板 {logical}")
         width, height = int(decoded.shape[1]), int(decoded.shape[0])
         if not isinstance(source_width, int) or not isinstance(source_height, int):
             raise InvalidTemplate("采集分辨率必须是整数")
         if orientation not in _ORIENTATIONS:
             raise InvalidTemplate(f"orientation 必须是 {_ORIENTATIONS} 之一")
+        meta = {
+            "schema_version": _SCHEMA_VERSION,
+            "logical": logical,
+            "image_sha256": hashlib.sha256(png).hexdigest(),
+            "width": width,
+            "height": height,
+            "source_width": source_width,
+            "source_height": source_height,
+            "orientation": orientation,
+            "app_package": app_package,
+            "capture_time": _utc_now(),
+            "note": note,
+        }
+        if capture_center is not None:
+            meta["capture_center"] = list(capture_center)
         return {
             "version_id": uuid.uuid4().hex,
             "logical": logical,
             "png": png,
-            "meta": {
-                "schema_version": _SCHEMA_VERSION,
-                "logical": logical,
-                "image_sha256": hashlib.sha256(png).hexdigest(),
-                "width": width,
-                "height": height,
-                "source_width": source_width,
-                "source_height": source_height,
-                "orientation": orientation,
-                "app_package": app_package,
-                "capture_time": _utc_now(),
-                "note": note,
-            },
+            "meta": meta,
         }
 
     def _write_version_files(self, version: dict) -> None:
