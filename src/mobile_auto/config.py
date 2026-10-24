@@ -6,7 +6,8 @@ MOBILE_APP_PACKAGE / MOBILE_APP_ACTIVITY),不新增环境变量。
 
 TOML 为可选的单一配置文件,路径由调用方(如 CLI --config)指定;
 键与字段同名。assets_dir / artifacts_dir 相对路径基于配置文件所在目录解析,
-未指定配置文件时基于工作目录。launch_ready_target 用 TOML 表格表示
+未指定配置文件时基于工作目录;load_config 返回的两者均为绝对路径。
+launch_ready_target 用 TOML 表格表示
 (by/value,可选 index、confidence、region),by 取 Locator 的小写字符串值。
 """
 
@@ -91,9 +92,11 @@ class MobileConfig:
         object.__setattr__(
             self, "poll_interval", _positive_float(self.poll_interval, "poll_interval")
         )
-        if isinstance(self.port, bool) or not isinstance(self.port, int):
-            raise _invalid("port", "必须是 1-65535 之间的整数")
-        if not 1 <= self.port <= 65535:
+        if (
+            isinstance(self.port, bool)
+            or not isinstance(self.port, int)
+            or not 1 <= self.port <= 65535
+        ):
             raise _invalid("port", "必须是 1-65535 之间的整数")
 
 
@@ -186,10 +189,10 @@ def load_config(
         )
 
     base_dir = Path(config_path).resolve().parent if config_path else Path.cwd()
-    for name in ("assets_dir", "artifacts_dir"):
-        if name in merged:
-            path = _directory(merged[name], name)
-            merged[name] = path if path.is_absolute() else (base_dir / path).resolve()
+    defaults = {"assets_dir": "assets", "artifacts_dir": "artifacts"}
+    for name, default in defaults.items():
+        path = _directory(merged.get(name, default), name)
+        merged[name] = path if path.is_absolute() else (base_dir / path).resolve()
 
     known = {f.name for f in fields(MobileConfig)}
     return MobileConfig(**{k: v for k, v in merged.items() if k in known})

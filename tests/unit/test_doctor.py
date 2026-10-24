@@ -3,6 +3,8 @@
 依赖版本与设备列表通过注入伪造,不调用真实 adb。
 """
 
+import pytest
+
 from mobile_auto import cli
 from mobile_auto.config import load_config
 
@@ -37,7 +39,7 @@ def devices_from_output(output):
     return lambda path: cli.parse_adb_devices(output)
 
 
-def run_report(tmp_path, *, versions=None, adb="/fake/adb.exe", devices=None, **kwargs):
+def run_report(*, versions=None, adb="/fake/adb.exe", devices=None, **kwargs):
     config = load_config(None, **kwargs)
     finder = adb if callable(adb) else (lambda: adb)
     return cli.run_doctor(
@@ -63,37 +65,61 @@ def test_parse_adb_devices_empty_output():
     assert cli.parse_adb_devices("List of devices attached\n") == []
 
 
+def test_list_adb_devices_issues_exactly_one_readonly_command():
+    """doctor 对设备的唯一动作是只读的 adb devices;不写入、不安装、不初始化。"""
+    calls = []
+
+    def fake_runner(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeCompleted(0, ADB_DEVICES_OUTPUT)
+
+    entries = cli.list_adb_devices("/fake/adb.exe", runner=fake_runner)
+    assert calls == [["/fake/adb.exe", "devices"]]
+    assert [e.serial for e in entries] == ["ABC123", "DEF456", "GHI789"]
+
+
+class FakeCompleted:
+    def __init__(self, returncode, stdout, stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_list_adb_devices_nonzero_exit_raises_probe_error():
+    def fake_runner(cmd, **kwargs):
+        return FakeCompleted(1, "", stderr="adb: device offline")
+
+    with pytest.raises(cli.AdbProbeError, match="退出码 1"):
+        cli.list_adb_devices("/fake/adb.exe", runner=fake_runner)
+
+
 def test_healthy_environment_passes_without_device_warnings(tmp_path):
-    report = run_report(tmp_path)
+    report = run_report()
     assert report.exit_code == 0
     assert report.adb_path == "/fake/adb.exe"
-    groups = {title: group for title, group in report._device_groups()}
-    assert {t: len(g) for t, g in groups.items()} == {
-        "已授权在线": 1,
-        "未授权": 1,
-        "离线": 1,
-        "其他状态": 0,
-    }
+    counts = {title: len(g) for title, g in report.device_groups().items()}
+    assert counts == {"已授权在线": 1, "未授权": 1, "离线": 1, "其他状态": 0}
     assert report.warnings == []
+    rendered = report.render()
+    assert "已授权在线: 1 台 — ABC123" in rendered
 
 
 def test_only_unauthorized_device_warns_but_exits_zero(tmp_path):
     report = run_report(
-        tmp_path,
-        devices=devices_from_output("List of devices attached\nDEF456\tunauthorized\n"),
+        devices=devices_from_output("List of devices attached\nDEF456\tunauthorized\n")
     )
     assert report.exit_code == 0
     assert any("已授权" in w for w in report.warnings)
 
 
 def test_no_device_is_warning_not_failure(tmp_path):
-    report = run_report(tmp_path, devices=devices_from_output("List of devices attached\n"))
+    report = run_report(devices=devices_from_output("List of devices attached\n"))
     assert report.exit_code == 0
     assert any("未发现任何设备" in w for w in report.warnings)
 
 
 def test_missing_core_dependency_fails_and_lists_it(tmp_path):
-    report = run_report(tmp_path, versions=make_versions(uiautomator2="3.2.0"))
+    report = run_report(versions=make_versions(uiautomator2="3.2.0"))
     assert report.exit_code == 1
     assert any("Pillow" in p for p in report.problems)
     rendered = report.render()
@@ -101,9 +127,7 @@ def test_missing_core_dependency_fails_and_lists_it(tmp_path):
 
 
 def test_optional_dependencies_missing_only_warns(tmp_path):
-    report = run_report(
-        tmp_path, versions=make_versions(uiautomator2="3.2.0", pillow="11.0.0")
-    )
+    report = run_report(versions=make_versions(uiautomator2="3.2.0", pillow="11.0.0"))
     optional = [d for d in report.dependencies if not d.required]
     assert optional and all(d.version is None for d in optional)
     assert report.exit_code == 0
@@ -111,23 +135,23 @@ def test_optional_dependencies_missing_only_warns(tmp_path):
 
 
 def test_missing_adb_fails(tmp_path):
-    report = run_report(tmp_path, adb=None)
+    report = run_report(adb=None)
     assert report.exit_code == 1
     assert any("未找到 adb" in p for p in report.problems)
 
 
 def test_adb_probe_failure_fails(tmp_path):
     def failing_lister(path):
-        raise cli._AdbProbeError("无法执行 adb(超时)")
+        raise cli.AdbProbeError("无法执行 adb(超时)")
 
-    report = run_report(tmp_path, devices=failing_lister)
+    report = run_report(devices=failing_lister)
     assert report.exit_code == 1
     assert report.adb_error is not None
     assert any("adb 探测失败" in p for p in report.problems)
 
 
 def test_configured_serial_not_online_warns_but_does_not_autoselect(tmp_path):
-    report = run_report(tmp_path, device_serial="MISSING99")
+    report = run_report(device_serial="MISSING99")
     assert report.exit_code == 0
     assert any("MISSING99" in w for w in report.warnings)
     # 不自动选择设备:报告只按状态列出,不存在"已选中设备"概念
@@ -136,14 +160,7 @@ def test_configured_serial_not_online_warns_but_does_not_autoselect(tmp_path):
 
 def test_other_device_states_counted_separately(tmp_path):
     report = run_report(
-        tmp_path,
-        devices=devices_from_output("List of devices attached\nRECOVERY1\trecovery\n"),
+        devices=devices_from_output("List of devices attached\nRECOVERY1\trecovery\n")
     )
     assert report.exit_code == 0
-    other = dict(report._device_groups())["其他状态"]
-    assert [d.serial for d in other] == ["RECOVERY1"]
-
-
-def test_render_states_no_side_effect_commitment(tmp_path):
-    rendered = run_report(tmp_path).render()
-    assert "不写入设备" in rendered
+    assert [d.serial for d in report.device_groups()["其他状态"]] == ["RECOVERY1"]

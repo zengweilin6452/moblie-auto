@@ -40,8 +40,11 @@ _OPTIONAL_DEPENDENCIES = (
 _ADB_TIMEOUT_SECONDS = 10
 
 
-class _AdbProbeError(RuntimeError):
-    """adb devices 探测失败(找不到二进制、超时或非零退出)。"""
+class AdbProbeError(RuntimeError):
+    """doctor 专有的 adb 探测失败,不属于驱动操作错误类别(plan 5.4)。
+
+    不会逸出 doctor:该错误总被转为报告中的问题项。
+    """
 
 
 @dataclass(frozen=True)
@@ -79,7 +82,8 @@ class DoctorReport:
 
     def render(self) -> str:
         lines = [
-            "mobile-auto doctor(仅无副作用检查:不初始化设备端组件、不安装、不写入设备)",
+            "mobile-auto doctor(无副作用检查:不初始化设备端组件、不安装、不写入设备)",
+            "说明:探测设备状态可能启动本机 adb 服务,属主机侧行为。",
             "",
             f"Python: {self.python_version}",
             f"配置文件: {self.config_file or '未指定(使用默认值)'}",
@@ -102,7 +106,7 @@ class DoctorReport:
                 lines.append(f"  adb devices: 失败({self.adb_error})")
         lines.append("")
         lines.append(f"设备(共 {len(self.devices)} 台):")
-        for title, group in self._device_groups():
+        for title, group in self.device_groups().items():
             detail = ", ".join(d.serial for d in group) if group else "-"
             lines.append(f"  {title}: {len(group)} 台 — {detail}")
         lines.append("")
@@ -115,14 +119,17 @@ class DoctorReport:
         lines.append(f"结果:{verdict}(退出码 {self.exit_code})")
         return "\n".join(lines)
 
-    def _device_groups(self):
-        return (
-            ("已授权在线", [d for d in self.devices if d.authorized]),
-            ("未授权", [d for d in self.devices if d.state == "unauthorized"]),
-            ("离线", [d for d in self.devices if d.state == "offline"]),
-            ("其他状态", [d for d in self.devices if d.state not in
-                       {"device", "unauthorized", "offline"}]),
-        )
+    def device_groups(self) -> dict[str, list[DeviceEntry]]:
+        return {
+            "已授权在线": [d for d in self.devices if d.authorized],
+            "未授权": [d for d in self.devices if d.state == "unauthorized"],
+            "离线": [d for d in self.devices if d.state == "offline"],
+            "其他状态": [
+                d
+                for d in self.devices
+                if d.state not in {"device", "unauthorized", "offline"}
+            ],
+        }
 
 
 def _installed_version(distribution: str) -> str | None:
@@ -138,7 +145,7 @@ def find_adb() -> str | None:
         import adbutils
 
         path = adbutils.adb_path()
-    except Exception:
+    except (ImportError, AttributeError, OSError, RuntimeError):
         path = None
     if path and Path(path).exists():
         return str(path)
@@ -159,6 +166,7 @@ def parse_adb_devices(output: str) -> list[DeviceEntry]:
 
 
 def list_adb_devices(adb_path: str, runner=subprocess.run) -> list[DeviceEntry]:
+    """doctor 对设备的唯一动作:`adb devices`;不写入、不安装、不初始化。"""
     try:
         proc = runner(
             [adb_path, "devices"],
@@ -169,11 +177,11 @@ def list_adb_devices(adb_path: str, runner=subprocess.run) -> list[DeviceEntry]:
             timeout=_ADB_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise _AdbProbeError(f"无法执行 adb({exc})") from exc
+        raise AdbProbeError(f"无法执行 adb({exc})") from exc
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         suffix = f": {detail}" if detail else ""
-        raise _AdbProbeError(f"adb devices 退出码 {proc.returncode}{suffix}")
+        raise AdbProbeError(f"adb devices 退出码 {proc.returncode}{suffix}")
     return parse_adb_devices(proc.stdout)
 
 
@@ -209,7 +217,7 @@ def run_doctor(
     else:
         try:
             devices = device_lister(adb_path)
-        except _AdbProbeError as exc:
+        except AdbProbeError as exc:
             adb_error = str(exc)
             problems.append(f"adb 探测失败:{exc}")
 
@@ -264,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "doctor":
         return _cmd_doctor(args)
-    parser.error(f"未知命令:{args.command}")
+    raise AssertionError(f"未处理的命令:{args.command}")
 
 
 if __name__ == "__main__":

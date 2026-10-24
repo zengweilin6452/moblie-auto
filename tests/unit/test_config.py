@@ -32,7 +32,8 @@ def test_defaults_without_any_source():
     assert config.port == 8765
     assert config.allowed_deeplink_schemes == ()
     assert config.launch_ready_target is None
-    assert config.assets_dir == Path("assets")
+    assert config.assets_dir == (Path.cwd() / "assets").resolve()
+    assert config.artifacts_dir == (Path.cwd() / "artifacts").resolve()
 
 
 def write_config(tmp_path, content):
