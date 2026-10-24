@@ -77,6 +77,7 @@ def test_contract_error_catalogue_is_closed():
         "UnsupportedOperation",
         "WaitTimeout",
         "InvalidTemplate",
+        "DuplicateTemplate",
         "MatchOverflow",
         "OperationOutcomeUnknown",
         "SessionFaulted",

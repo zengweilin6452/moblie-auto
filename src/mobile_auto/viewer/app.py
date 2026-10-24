@@ -17,6 +17,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
@@ -24,12 +25,12 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..contracts import Locator, Target
+from ..core.backend import enumerate_device_states
 from ..core.selectors import (
     select_matches,
     validate_locatable,
     visible_only,
 )
-from ..core.backend import enumerate_device_states
 from ..core.session import DeviceSession, SessionState
 from ..core.ui_tree import flatten, parse_ui_hierarchy
 from ..errors import (
@@ -37,6 +38,7 @@ from ..errors import (
     ConfigurationError,
     DeviceBusy,
     DeviceUnavailable,
+    DuplicateTemplate,
     InvalidTarget,
     InvalidTemplate,
     MatchOverflow,
@@ -70,6 +72,7 @@ _ERROR_STATUS = {
     MatchOverflow: 400,
     InvalidTarget: 422,
     InvalidTemplate: 422,
+    DuplicateTemplate: 409,  # 同名创建是冲突;前端以此触发确认更新流程
     ConfigurationError: 400,
     StaleHandle: 409,
     DeviceBusy: 409,
@@ -254,7 +257,9 @@ class _DeviceRegistry:
         self._entries: dict[str, _DeviceEntry] = {}
 
     @classmethod
-    def single(cls, session: DeviceSession, manager: _ChannelManager | None = None) -> "_DeviceRegistry":
+    def single(
+        cls, session: DeviceSession, manager: _ChannelManager | None = None
+    ) -> _DeviceRegistry:
         """单设备兼容视图:预置已启动会话(测试与旧调用方),不触碰 adb 枚举。"""
         registry = cls.__new__(cls)
         registry._config = session.config
@@ -294,17 +299,21 @@ class _DeviceRegistry:
             entries = dict(self._entries)
         default = self.default_serial()
         serials = sorted(set(states) | set(entries))
-        return [
-            {
-                "serial": serial,
-                "state": states.get(serial) or ("connected" if serial in entries else "unknown"),
-                "session": entries[serial].session.state.value
-                if entries[serial].session is not None
-                else None,
-                "default": serial == default,
-            }
-            for serial in serials
-        ]
+        result = []
+        for serial in serials:
+            entry = entries.get(serial)  # adb 可见但尚未建会话:session 为 null
+            result.append(
+                {
+                    "serial": serial,
+                    "state": states.get(serial)
+                    or ("connected" if entry is not None else "unknown"),
+                    "session": entry.session.state.value
+                    if entry is not None and entry.session is not None
+                    else None,
+                    "default": serial == default,
+                }
+            )
+        return result
 
     def entry(self, serial: str, *, create: bool = False) -> _DeviceEntry | None:
         """已存在的条目;create 时懒建会话(连接设备)后返回。"""
@@ -833,22 +842,20 @@ def create_app(
         """短事务注入:租约(409 门控)→ 队列串行执行 → 释放。
 
         会话与通道管理器按请求解析的目标设备传入;视频通道懒启动遵循
-        同一租约门控;注入不成功不释放租约的窗口极小且不回滚,失败
-        时如实报错。
+        同一租约门控;超时且任务仍在运行时,租约保留至任务实际结束
+        (经 _LeaseGuard 移交),失败时如实报错。
         """
-        session.acquire_lease()  # LEASED(pytest 持有)→ DeviceBusy → 409
-        try:
+        with _LeaseGuard(session) as guard:
             channel = manager.channel()
             if channel is None or not channel.healthy():
                 raise StreamUnavailable("视频流通道不可用,无法注入")
-            future = session.submit(lambda backend: operation(channel))
-            try:
-                return future.result(timeout=10.0)
-            except TimeoutError as exc:
-                future.cancel()
-                raise DeviceUnavailable("注入执行超时") from exc
-        finally:
-            session.release_lease()
+            _submit_bounded(
+                session,
+                guard,
+                lambda backend: operation(channel),
+                timeout=10.0,
+                error_message="注入执行超时",
+            )
 
     @app.post("/api/v1/input/touch")
     async def input_touch(request: Request, device: str | None = None):
@@ -980,7 +987,7 @@ class _PreviewSender:
             await asyncio.wait_for(
                 self._ws.send_json(frame), timeout=self._SEND_TIMEOUT_SECONDS
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise RuntimeError(
                 f"预览客户端 {self._SEND_TIMEOUT_SECONDS:.0f} 秒未取帧,判定失联"
             ) from exc
@@ -1006,12 +1013,14 @@ def _build_preview_frame(session: DeviceSession, store: SnapshotStore) -> dict:
         }
     try:
         # 预览帧是瞬态观察,不入快照库:不挤占拾取/验证用的用户快照
-        session.acquire_lease()
-        try:
-            future = session.submit(lambda backend: backend.screenshot_png())
-            png = future.result(timeout=_CAPTURE_TIMEOUT_SECONDS)
-        finally:
-            session.release_lease()
+        with _LeaseGuard(session) as guard:
+            png = _submit_bounded(
+                session,
+                guard,
+                lambda backend: backend.screenshot_png(),
+                timeout=_CAPTURE_TIMEOUT_SECONDS,
+                error_message="预览截图超时",
+            )
         return {
             "kind": "frame",
             "captured_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
@@ -1037,20 +1046,78 @@ def _png_to_jpeg(png: bytes) -> bytes:
     return buf.tobytes() if ok else png
 
 
+class _LeaseGuard:
+    """短事务租约看护:保证租约释放不早于队列任务实际结束。
+
+    正常完成(以及超时但任务已结束)由 with 块退出释放;超时而任务
+    仍在运行时,把释放责任移交给任务完成回调——单 worker 队列里运行中
+    的任务无法中断,提前释放会让其他进程在设备仍被操作时获得租约。
+    """
+
+    def __init__(self, session: DeviceSession) -> None:
+        self._session = session
+        self._lock = threading.Lock()
+        self._settled = False  # 已释放或已移交,二者只发生一次
+
+    def hand_off_to(self, future) -> None:
+        """移交释放责任:future 完成时释放(已在完成则立即释放)。"""
+        with self._lock:
+            if self._settled:
+                return
+            self._settled = True
+
+        def _release_when_done(_future) -> None:
+            try:
+                # close 并发排空时由 close 自己释放;此处只补常态释放
+                if self._session.state == SessionState.LEASED:
+                    self._session.release_lease()
+            except Exception:  # 回调线程内失败不影响任务结果
+                pass
+
+        future.add_done_callback(_release_when_done)
+
+    def release(self) -> None:
+        with self._lock:
+            if self._settled:
+                return
+            self._settled = True
+        self._session.release_lease()
+
+    def __enter__(self) -> _LeaseGuard:
+        self._session.acquire_lease()  # LEASED(pytest 持有)→ DeviceBusy → 409
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.release()
+
+
+def _submit_bounded(session, guard, operation, *, timeout: float, error_message: str):
+    """提交队列并 bounded 等待;超时且任务仍在运行时,租约经 guard
+    移交给完成回调,保留占用至任务结束。"""
+    future = session.submit(operation)
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError as exc:
+        session.mark_cancelled(future)  # 排队任务撤销;运行任务结局记 unknown
+        if not future.done():
+            guard.hand_off_to(future)  # 运行中任务无法中断:保留租约至其结束
+        raise DeviceUnavailable(error_message) from exc
+    finally:
+        guard.release()
+
+
 def capture_snapshot_sync(session: DeviceSession, with_tree: bool) -> Snapshot:
     """短事务采集:获取租约 → 截图(可选树)→ 释放;有界等待。"""
-    session.acquire_lease()  # LEASED → DeviceBusy(409)
-    try:
+    with _LeaseGuard(session) as guard:
         if session.state != SessionState.LEASED:
             raise DeviceUnavailable("会话未就绪,无法采集")
-        future = session.submit(lambda backend: _capture_payload(backend, with_tree))
-        try:
-            payload = future.result(timeout=_CAPTURE_TIMEOUT_SECONDS)
-        except TimeoutError as exc:
-            future.cancel()
-            raise DeviceUnavailable("采集超时") from exc
-    finally:
-        session.release_lease()
+        payload = _submit_bounded(
+            session,
+            guard,
+            lambda backend: _capture_payload(backend, with_tree),
+            timeout=_CAPTURE_TIMEOUT_SECONDS,
+            error_message="采集超时",
+        )
     png, width, height, tree_xml, tree_error = payload
     now = datetime.now(UTC)
     return Snapshot(
@@ -1074,16 +1141,14 @@ def capture_and_query_sync(
     返回 (新快照, 命中列表[, 分数列表]);查询语义与驱动一致。
     """
 
-    session.acquire_lease()
-    try:
-        future = session.submit(lambda backend: _query_payload(backend, session, store, target))
-        try:
-            payload = future.result(timeout=_CAPTURE_TIMEOUT_SECONDS)
-        except TimeoutError as exc:
-            future.cancel()
-            raise DeviceUnavailable("定位验证查询超时") from exc
-    finally:
-        session.release_lease()
+    with _LeaseGuard(session) as guard:
+        payload = _submit_bounded(
+            session,
+            guard,
+            lambda backend: _query_payload(backend, session, store, target),
+            timeout=_CAPTURE_TIMEOUT_SECONDS,
+            error_message="定位验证查询超时",
+        )
     if with_scores:
         png, screen, matches, scores = payload
     else:
@@ -1244,7 +1309,13 @@ def _host_allowed(host: str) -> bool:
 
 
 def _origin_allowed(origin: str) -> bool:
-    for prefix in ("http://127.0.0.1", "http://localhost", "http://[::1]"):
-        if origin.startswith(prefix):
-            return True
-    return False
+    """解析后精确比对主机名:前缀匹配会把 localhost.attacker.example
+    一并放行;端口任意(本机开发端口不固定),主机名必须恰好是回环。
+    畸形来源(如非法 IPv6 括号)解析失败一律拒绝。"""
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    return parts.hostname in ("127.0.0.1", "localhost", "::1")

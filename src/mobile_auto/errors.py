@@ -49,6 +49,10 @@ class InvalidTemplate(MobileAutoError):
     """模板图片或元数据非法:损坏、低纹理、摘要不符或版本缺失。"""
 
 
+class DuplicateTemplate(InvalidTemplate):
+    """同名模板已存在:创建被拒(冲突);更新须显式提供旧版本摘要。"""
+
+
 class MatchOverflow(MobileAutoError):
     """模板匹配候选或结果数量超过上限,需要收缩搜索区域或提高阈值。"""
 
@@ -70,6 +74,7 @@ __all__ = [
     "ConfigurationError",
     "DeviceBusy",
     "DeviceUnavailable",
+    "DuplicateTemplate",
     "ElementNotFound",
     "InvalidTarget",
     "InvalidTemplate",

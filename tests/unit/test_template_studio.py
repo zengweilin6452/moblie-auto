@@ -45,7 +45,8 @@ def test_create_duplicate_conflict_then_confirmed_update(client):
     old_sha = first.json()["sha256"]
 
     dup = http.post("/api/v1/templates", json=body)
-    assert dup.status_code == 422  # 同名默认拒绝(InvalidTemplate→422 输入语义)
+    assert dup.status_code == 409  # 同名创建是冲突;前端以此触发确认更新流程
+    assert dup.json()["code"] == "DuplicateTemplate"
 
     # 更新用同一截图的另一块区域:内容不同 → 新版本摘要不同
     updated = http.put(

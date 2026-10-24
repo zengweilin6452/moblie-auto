@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from ..errors import InvalidTemplate, StaleHandle
+from ..errors import DuplicateTemplate, InvalidTemplate, StaleHandle
 from .engine import decode_rgb
 
 MANIFEST_NAME = "manifest.json"
@@ -131,11 +131,15 @@ class TemplateStore:
         app_package: str = "",
         note: str = "",
     ) -> LoadedTemplate:
-        """登记新模板(也是旧模板的专门导入步骤);同名默认拒绝。"""
+        """登记新模板(也是旧模板的专门导入步骤);同名默认拒绝。
+
+        同名是冲突(409 语义),区别于其他模板输入非法(422);两者同为
+        InvalidTemplate 子类,按 InvalidTemplate 捕获的既有调用方不受影响。
+        """
         logical = validate_logical_path(logical)
         with self._asset_lock():
             if logical in self._read_manifest()["templates"]:
-                raise InvalidTemplate(
+                raise DuplicateTemplate(
                     f"同名模板已存在:{logical};更新须显式提供旧版本摘要"
                 )
             version = self._build_version(logical, png, source_width, source_height,
