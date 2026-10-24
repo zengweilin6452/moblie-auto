@@ -10,12 +10,16 @@ requires-python = ">=3.12"
 dependencies = [
     "uiautomator2>=3.0",
     "Pillow>=10.0",
+    "adbutils>=2.0",
 ]
 
 [project.optional-dependencies]
 image = [
     "opencv-python-headless>=4.9",
     "numpy>=1.26",
+]
+stream = [
+    "wetest-scrcpy>=0.4.0,<0.5",
 ]
 viewer = [
     "fastapi>=0.111",

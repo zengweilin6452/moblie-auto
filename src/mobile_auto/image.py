@@ -3,7 +3,7 @@
 算法固定行为:截图与模板解码为一致 8-bit RGB;灰度仅做候选定位
 (TM_CCOEFF_NORMED),颜色信息保留用于颜色验证;候选取局部峰值,
 同分按 (y,x) 稳定排序;NMS 抑制重叠;结果还原为全截图坐标并按
-(y,x) 排序;每个候选再做颜色差异验证(同色轻微渲染差异接受,
+(y,x) 排序;每个候选再做颜色验证(同色轻微渲染差异接受,
 形状相同状态色不同拒绝,决定 Q3)。
 
 校准初值(非已证明最优值;样本集固定后调整须记录依据于本文件):
@@ -11,8 +11,11 @@
 - DEFAULT_CONFIDENCE = 0.90:灰度相关性阈值,可被 Target.confidence 覆盖
 - NMS_IOU = 0.30:重叠抑制阈值
 - MAX_PEAKS = 2000 / MAX_MATCHES = 100:候选与结果上限,超限拒绝不静默丢弃
-- COLOR_DIFF_MAX = 16(0-255 标度,RGB 均值绝对差):颜色验证阈值,
-  由固定正负样本组校准(同色轻微渲染差异须接受、状态色差异须拒绝)
+- COLOR_CONFIDENCE_MIN = 0.90:颜色验证阈值(V2 P3)。候选窗口与模板各
+  裁剪到 [10,245] 后转 HSV,H/S/V 三通道分别计算去均值相关,取最小值
+  达阈值才通过。由固定正负样本组校准:jpeg85 渲染差异正样本须接受
+  (三通道最小值实测 ≥0.97)、通道对调状态色负样本须拒绝(实测 ≤0.0)。
+  方差近零的通道对显式定义(见 _channel_ncc),不依赖未定义的 0/0。
 - 坐标容差 2 像素:合成样本验收坐标的中心容差
 """
 
@@ -31,7 +34,10 @@ DEFAULT_CONFIDENCE = 0.90
 NMS_IOU = 0.30
 MAX_PEAKS = 2000
 MAX_MATCHES = 100
-COLOR_DIFF_MAX = 16.0
+COLOR_CONFIDENCE_MIN = 0.90  # V2 P3:HSV 三通道最小相关性下限
+_COLOR_CLIP = (10, 245)  # 转 HSV 前的 RGB 裁剪范围,压低极端值对色相的噪声
+_CHANNEL_FLAT_STD = 1.0  # 通道标准差低于此值视为常量通道(0-255 标度)
+_CHANNEL_FLAT_MEAN_DIFF = 2.0  # 双常量通道的均值差容忍(轻微渲染差异)
 
 
 @dataclass(frozen=True)
@@ -112,17 +118,25 @@ class PreparedTemplate:
 
     rgb: np.ndarray
     gray: np.ndarray
+    hsv: np.ndarray
 
 
 def prepare_template(template_png: bytes, *, what: str = "模板") -> PreparedTemplate:
-    """解码模板并完成静态校验;低纹理模板在此拒绝(与 v1 相同的判定)。"""
+    """解码模板并完成静态校验;低纹理模板在此拒绝(与 v1 相同的判定)。
+
+    HSV 在此一次算好(裁剪到 [10,245] 后转换),供候选颜色验证复用(P3)。
+    """
     template = decode_rgb(template_png, what=what)
     template_gray = cv2.cvtColor(template, cv2.COLOR_RGB2GRAY)
     if float(template_gray.std()) < GRAY_STDDEV_MIN:
         raise InvalidTemplate(
             "模板灰度标准差过低(近纯色),相关性会退化;请使用有纹理的模板"
         )
-    return PreparedTemplate(rgb=template, gray=template_gray)
+    return PreparedTemplate(
+        rgb=template,
+        gray=template_gray,
+        hsv=cv2.cvtColor(np.clip(template, *_COLOR_CLIP), cv2.COLOR_RGB2HSV),
+    )
 
 
 def match_template(
@@ -195,7 +209,7 @@ def _match_prepared(
 
     results = []
     for py, px, score in matches:
-        if not _color_matches(search, template.rgb, px, py, tw, th):
+        if not _color_matches(search, template.hsv, px, py, tw, th):
             continue  # 形状相同、状态色不同:判为不匹配(决定 Q3)
         results.append(
             MatchResult(
@@ -258,14 +272,42 @@ def _non_max_suppress(
     return kept
 
 
-def _color_matches(
-    search: np.ndarray, template: np.ndarray, px: int, py: int, tw: int, th: int
-) -> bool:
-    """颜色验证:候选区域与模板的 RGB 均值绝对差不超过阈值。
+def _channel_ncc(a: np.ndarray, b: np.ndarray) -> float:
+    """同尺寸单通道的去均值相关(TM_CCOEFF_NORMED 的同尺寸特例)。
 
-    同色轻微渲染差异接受;形状相同、状态色不同拒绝(决定 Q3)。
+    常量通道对显式定义,不依赖未定义的 0/0:双方常量且均值差在容忍内
+    视为完全一致(纯色图标的 S/H 通道常见),常量值不同或仅一方常量
+    视为不相关。非 RGB 的 HSV 色相为 0-180 标度,不做环形处理(与
+    借鉴来源 Airtest cal_rgb_confidence 相同的已知限制)。
     """
-    candidate = search[py : py + th, px : px + tw].astype(np.int16)
-    reference = template.astype(np.int16)
-    diff = float(np.abs(candidate - reference).mean())
-    return diff <= COLOR_DIFF_MAX
+    a = a.astype(np.float32)
+    b = b.astype(np.float32)
+    da = a - a.mean()
+    db = b - b.mean()
+    na = float(np.sqrt((da * da).sum()))
+    nb = float(np.sqrt((db * db).sum()))
+    a_flat = na / math.sqrt(da.size) < _CHANNEL_FLAT_STD  # L2 范数换算逐像素 std
+    b_flat = nb / math.sqrt(db.size) < _CHANNEL_FLAT_STD
+    if a_flat and b_flat:
+        return 1.0 if abs(float(a.mean()) - float(b.mean())) <= _CHANNEL_FLAT_MEAN_DIFF else 0.0
+    if a_flat or b_flat:
+        return 0.0
+    return float(np.clip((da * db).sum() / (na * nb), -1.0, 1.0))
+
+
+def _color_matches(
+    search: np.ndarray, template_hsv: np.ndarray, px: int, py: int, tw: int, th: int
+) -> bool:
+    """颜色验证(P3):候选窗口与模板各自裁剪转 HSV,H/S/V 三通道
+    去均值相关取最小值,达 COLOR_CONFIDENCE_MIN 才通过。
+
+    同色轻微渲染差异三通道仍高度相关,接受;形状相同、状态色不同
+    (如通道对调)在色相/饱和度通道上失去相关,拒绝(决定 Q3)。
+    """
+    candidate = search[py : py + th, px : px + tw]
+    candidate_hsv = cv2.cvtColor(
+        np.clip(candidate, *_COLOR_CLIP), cv2.COLOR_RGB2HSV
+    )
+    return min(
+        _channel_ncc(candidate_hsv[:, :, i], template_hsv[:, :, i]) for i in range(3)
+    ) >= COLOR_CONFIDENCE_MIN

@@ -30,6 +30,7 @@ from ..errors import (
     MobileAutoError,
     SessionFaulted,
     StaleHandle,
+    StreamUnavailable,
     UnsupportedOperation,
 )
 from ..selectors import (
@@ -61,6 +62,7 @@ _ERROR_STATUS = {
     ConfigurationError: 400,
     StaleHandle: 409,
     DeviceBusy: 409,
+    StreamUnavailable: 503,
     SessionFaulted: 503,
     DeviceUnavailable: 503,
 }

@@ -61,6 +61,10 @@ class SessionFaulted(MobileAutoError):
     """会话故障:在途操作结果无法确认,会话拒绝后续设备操作。"""
 
 
+class StreamUnavailable(MobileAutoError):
+    """scrcpy 视频流/控制通道不可用;属能力降级信号,上层回退 u2,不是会话故障。"""
+
+
 __all__ = [
     "AmbiguousTarget",
     "ConfigurationError",
@@ -74,6 +78,7 @@ __all__ = [
     "OperationOutcomeUnknown",
     "SessionFaulted",
     "StaleHandle",
+    "StreamUnavailable",
     "UnsupportedOperation",
     "WaitTimeout",
 ]
