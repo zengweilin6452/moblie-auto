@@ -1,7 +1,13 @@
-"""pytest 失败证据钩子单元测试(工单 06):pytester 隔离运行。"""
+"""pytest 失败证据钩子单元测试(工单 06):pytester 隔离运行。
+
+子进程用 -p 显式加载插件:不依赖 editable 安装元数据中入口点的鲜度,
+安装早于 pytest11 声明的环境也能稳定通过。
+"""
 
 
 pytest_plugins = ["pytester"]
+
+_PLUGIN = "mobile_auto.evidence.pytest_plugin"
 
 _CONFTEST = '''
 import io
@@ -71,14 +77,14 @@ def _prepare(pytester):
 
 def test_flag_off_collects_nothing(pytester):
     _prepare(pytester)
-    result = pytester.runpytest_subprocess()
+    result = pytester.runpytest_subprocess("-p", _PLUGIN)
     result.assert_outcomes(failed=1)
     assert "mobile-auto-evidence" not in result.stdout.str()
 
 
 def test_flag_on_writes_evidence_section(pytester):
     _prepare(pytester)
-    result = pytester.runpytest_subprocess("--mobile-evidence", "-q")
+    result = pytester.runpytest_subprocess("-p", _PLUGIN, "--mobile-evidence", "-q")
     result.assert_outcomes(failed=1)
     out = result.stdout.str()
     assert "frame_source: u2" in out
@@ -92,6 +98,6 @@ def test_flag_on_without_session_notes_missing(pytester):
             assert False, "无会话"
         """
     )
-    result = pytester.runpytest_subprocess("--mobile-evidence", "-q")
+    result = pytester.runpytest_subprocess("-p", _PLUGIN, "--mobile-evidence", "-q")
     result.assert_outcomes(failed=1)
     assert "未找到可用的 DeviceSession" in result.stdout.str()

@@ -2,8 +2,8 @@
 
 wetest-scrcpy==0.4.0 的 wheel 未打包 scrcpy-server(上游打包回归),
 0.3.8 wheel 含协议匹配(1.2.4 + udt_socket_name)的 server。本脚本从
-0.3.8 wheel 提取两个文件到 src/mobile_auto/scrcpy_assets/,幂等:
-已存在且摘要一致则跳过。
+0.3.8 wheel 提取两个文件到运行时读取的 src/mobile_auto/stream/assets/,
+幂等:已存在且摘要一致则跳过。
 
 用法:
   python scripts/fetch_scrcpy_server.py            # 经 pip 从 PyPI 下载
@@ -28,7 +28,8 @@ FILES = {
 }
 
 ROOT = Path(__file__).resolve().parent.parent
-TARGET_DIR = ROOT / "src" / "mobile_auto" / "scrcpy_assets"
+# 运行时读取目录(stream/channel.py 的 _ASSETS_DIR);写别处修不了缺失资产
+TARGET_DIR = ROOT / "src" / "mobile_auto" / "stream" / "assets"
 
 
 def sha256_of(path: Path) -> str:

@@ -42,10 +42,10 @@ uvicorn==0.54.0
 websockets==17.3
 
 # ── P1 stream extra(2026-10-24 追加;scrcpy 视频流/控制通道)──
+# wetest 系仅要求 pydantic>=2.0.0,与主块共用同一固定,不重复列版本
 wetest-scrcpy==0.4.0
 wetest-osplatform==0.0.2
 wetest-pyidb==0.0.2
 av==18.1.0
 construct==2.10.70
-pydantic==2.13.4
 tidevice==0.12.11

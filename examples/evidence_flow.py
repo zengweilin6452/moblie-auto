@@ -11,7 +11,7 @@ function 级适配器(资源所有权约定见 docs/integration.md)。第二个
 
 import pytest
 
-from mobile_auto import DeviceSession, Locator, Target, load_config
+from mobile_auto import DeviceSession, load_config
 
 
 @pytest.fixture(scope="session")

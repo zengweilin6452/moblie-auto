@@ -25,8 +25,7 @@ from .core.backend import (
 from .core.backend import (
     find_adb_binary as find_adb,
 )
-from .core.session import DeviceSession
-from .errors import ConfigurationError, MobileAutoError
+from .errors import ConfigurationError
 
 EXIT_OK = 0
 EXIT_ENVIRONMENT = 1
