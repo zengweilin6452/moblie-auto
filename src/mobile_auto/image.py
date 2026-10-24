@@ -171,52 +171,51 @@ def match_template(
 
 
 def _local_peaks(scores: np.ndarray, threshold: float) -> list[tuple[int, int, float]]:
-    """提取达阈值的局部峰值(8 邻域极大);同分由调用方按 (y,x) 稳定排序。"""
-    padded = np.full(
-        (scores.shape[0] + 2, scores.shape[1] + 2), -np.inf, dtype=scores.dtype
-    )
-    padded[1:-1, 1:-1] = scores
-    peaks = []
-    rows, cols = scores.shape
-    for y in range(rows):
-        for x in range(cols):
-            score = scores[y, x]
-            if score < threshold:
-                continue
-            neighborhood = padded[y : y + 3, x : x + 3]
-            if score >= neighborhood.max():
-                peaks.append((y, x, float(score)))
-    return peaks
+    """提取达阈值的局部峰值(8 邻域极大);向量化实现,行主序即 (y,x) 稳定排序。
+
+    cv2.dilate 的边界外取 -inf,与逐格实现的 -inf 填充语义一致:数组边缘
+    的格子只与界内邻居竞争。平台区(多个等分相邻格)全部视为峰值,由
+    NMS 去重,与 v1 行为一致。
+    """
+    above = scores >= threshold
+    if not above.any():
+        return []
+    neighborhood_max = cv2.dilate(scores, np.ones((3, 3), dtype=np.uint8))
+    ys, xs = np.nonzero(above & (scores == neighborhood_max))
+    return [(int(y), int(x), float(scores[y, x])) for y, x in zip(ys, xs, strict=True)]
 
 
 def _non_max_suppress(
     peaks: list[tuple[int, int, float]], width: int, height: int
 ) -> list[tuple[int, int, float]]:
-    """NMS:分数降序、同分 (y,x) 顺序处理;IoU 大于阈值时抑制。"""
-    ordered = sorted(peaks, key=lambda p: (-p[2], p[0], p[1]))
+    """NMS:分数降序、同分 (y,x) 顺序处理;IoU 大于阈值时抑制。
+
+    同尺寸框的 IoU 批量向量化计算;处理序与排序键和 v1 完全一致。
+    """
+    if not peaks:
+        return []
+    scores = np.array([p[2] for p in peaks])
+    ys = np.array([p[0] for p in peaks], dtype=np.int64)
+    xs = np.array([p[1] for p in peaks], dtype=np.int64)
+    order = np.lexsort((xs, ys, -scores))
     kept: list[tuple[int, int, float]] = []
-    for py, px, score in ordered:
-        duplicate = False
-        for ky, kx, _ in kept:
-            iou = _iou(px, py, width, height, kx, ky, width, height)
-            if iou > NMS_IOU:
-                duplicate = True
-                break
-        if not duplicate:
-            kept.append((py, px, score))
+    kept_x = np.empty(0, dtype=np.int64)
+    kept_y = np.empty(0, dtype=np.int64)
+    for idx in order:
+        px, py, score = int(xs[idx]), int(ys[idx]), float(scores[idx])
+        if kept_x.size:
+            ix = np.maximum(px, kept_x)
+            iy = np.maximum(py, kept_y)
+            ix2 = np.minimum(px + width, kept_x + width)
+            iy2 = np.minimum(py + height, kept_y + height)
+            inter = np.maximum(ix2 - ix, 0) * np.maximum(iy2 - iy, 0)
+            union = 2 * width * height - inter
+            if (inter > union * NMS_IOU).any():
+                continue
+        kept.append((py, px, score))
+        kept_x = np.append(kept_x, px)
+        kept_y = np.append(kept_y, py)
     return kept
-
-
-def _iou(
-    ax: int, ay: int, aw: int, ah: int, bx: int, by: int, bw: int, bh: int
-) -> float:
-    ix = max(ax, bx)
-    iy = max(ay, by)
-    ix2 = min(ax + aw, bx + bw)
-    iy2 = min(ay + ah, by + bh)
-    inter = max(0, ix2 - ix) * max(0, iy2 - iy)
-    union = aw * ah + bw * bh - inter
-    return inter / union if union > 0 else 0.0
 
 
 def _color_matches(
