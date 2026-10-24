@@ -52,9 +52,17 @@ class MobileAdapter:
         self._session = session
 
     async def _call(self, operation: Callable[[Any], T]) -> T:
-        """提交到会话队列并等待;对未开始任务的取消传播由 wrap_future 提供。"""
+        """提交到会话队列并等待;对未开始任务的取消传播由 wrap_future 提供。
+
+        等待方被取消时向会话登记:排队未开始的任务取消;已运行的操作
+        结果记为 unknown,不自动重放(plan 7.1)。
+        """
         future: Future[T] = self._session.submit(operation)
-        return await asyncio.wrap_future(future)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            self._session.mark_cancelled(future)
+            raise
 
     def _locate(self, backend, target: Target) -> list:
         """单轮定位:校验定位方式 → 底层查找 → 可见性过滤,保持树遍历序。"""
@@ -181,6 +189,7 @@ class MobileAdapter:
             except ElementNotFound:  # 本轮未出现:交给轮询继续
                 return _MISSING
             ensure_editable(getattr(node, "info", {}) or {})
+            self._session.send_checkpoint()  # 匹配完成、发送前的取消检查点
             node.clear_text()
             node.set_text(text)
             return True
@@ -250,7 +259,8 @@ class MobileAdapter:
     async def click(self, target: Target) -> None:
         """等待单目标可见(预算内轮询)后,在同一队列任务里发送一次点击。
 
-        多匹配无序号立即报歧义;预算耗尽报 ElementNotFound。
+        多匹配无序号立即报歧义;预算耗尽报 ElementNotFound;
+        匹配完成后、点击发送前的取消检查点保证被取消时不发出点击。
         """
 
         def attempt(backend):
@@ -258,6 +268,7 @@ class MobileAdapter:
                 element = resolve_single(self._locate(backend, target), target)
             except ElementNotFound:  # 本轮未出现:交给轮询继续
                 return _MISSING
+            self._session.send_checkpoint()  # 必测窗口:点击发送前取消
             element.click()
             return True
 

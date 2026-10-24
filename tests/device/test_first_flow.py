@@ -15,7 +15,7 @@ def test_session_targets_configured_device(mobile_config):
     session.start()
     try:
         assert session.serial == mobile_config.device_serial
-        assert session.state.value == "ready"
+        assert session.state.value == "leased"
     finally:
         session.close()
 

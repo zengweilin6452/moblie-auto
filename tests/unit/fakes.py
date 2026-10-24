@@ -51,6 +51,7 @@ class FakeBackend:
         find_script=None,
         screenshots=None,
         ui_xml="",
+        element_filter=None,
     ):
         self.screen = screen
         self.elements = elements or {}  # (Locator 值, value) -> [FakeElement]
@@ -65,7 +66,7 @@ class FakeBackend:
         self.find_calls = 0
         self.screenshot_calls = 0
         self.closed = False
-        self.element_filter = None  # 可注入自定义匹配器(by, value, element) -> bool
+        self.element_filter = element_filter  # (by, value, element) -> bool
 
     def connect(self, serial: str) -> None:
         self.connect_calls.append(serial)
@@ -125,18 +126,37 @@ class FakeBackend:
         return self.ui_xml
 
 
+class NullLease:
+    """测试用租约:记录获取/释放,不做真实跨进程锁定。"""
+
+    def __init__(self, serial):
+        self.serial = serial
+        self.acquired = 0
+        self.released = 0
+
+    def acquire(self) -> None:
+        self.acquired += 1
+
+    def release(self) -> None:
+        self.released += 1
+
+
 def make_session(
     config: MobileConfig | None = None,
     backend: FakeBackend | None = None,
     states: dict[str, str] | None = None,
+    lease_factory=None,
 ):
-    """构建注入伪造的会话;默认唯一已授权设备 SERIAL1。"""
+    """构建注入伪造的会话;默认唯一已授权设备 SERIAL1 与空租约。"""
     config = config or MobileConfig(device_serial="SERIAL1")
     backend = backend or FakeBackend()
+    if lease_factory is None:
+        lease_factory = NullLease
     session = DeviceSession(
         config,
         backend_factory=lambda: backend,
         device_enumerator=lambda: {"SERIAL1": "device"} if states is None else states,
+        lease_factory=lease_factory,
     )
     return session, backend
 

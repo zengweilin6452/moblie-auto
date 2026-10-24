@@ -43,7 +43,7 @@ def test_session_start_connects_resolved_serial():
         states={"S9": "device", "S1": "unauthorized"},
     )
     session.start()
-    assert session.state is SessionState.READY
+    assert session.state is SessionState.LEASED
     assert session.serial == "S9"
     assert backend.connect_calls == ["S9"]
 
