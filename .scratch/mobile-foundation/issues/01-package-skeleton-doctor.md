@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** open
+**Status:** in-progress
 
 - [ ] 可编辑安装成功；公开导出可导入且导入无设备副作用
 - [ ] doctor 报告依赖版本与 ADB 可见性；缺依赖非零退出并列出缺失项
