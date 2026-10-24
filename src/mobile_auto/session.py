@@ -25,6 +25,7 @@ from typing import TypeVar
 from .backend_u2 import DeviceBackend, U2Backend, enumerate_device_states
 from .config import MobileConfig
 from .errors import (
+    DeviceBusy,
     DeviceUnavailable,
     SessionFaulted,
 )
@@ -171,6 +172,8 @@ class DeviceSession:
     def acquire_lease(self) -> None:
         """READY → LEASED;被占用立即报 DeviceBusy,状态保持 READY。"""
         with self._lock:
+            if self._state == SessionState.LEASED:
+                raise DeviceBusy("设备租约已持有;采集事务不可重入")
             if self._state != SessionState.READY:
                 raise RuntimeError(
                     f"仅 READY 状态可获取租约,当前 {self._state.value}"

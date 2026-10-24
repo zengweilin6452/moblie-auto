@@ -25,7 +25,8 @@ from .backend_u2 import (
     find_adb_binary as find_adb,
 )
 from .config import MobileConfig, load_config
-from .errors import ConfigurationError
+from .errors import ConfigurationError, MobileAutoError
+from .session import DeviceSession
 
 EXIT_OK = 0
 EXIT_ENVIRONMENT = 1
@@ -198,6 +199,28 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return report.exit_code
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """启动本机网页服务:仅监听 127.0.0.1;无设备时降级启动、状态如实报告。"""
+    import uvicorn
+
+    from .viewer.app import create_app
+
+    try:
+        config = load_config(args.config)
+    except ConfigurationError as exc:
+        print(f"配置错误:{exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    session = DeviceSession(config)
+    try:
+        session.start()
+        session.release_lease()  # 网页空闲时回到 READY;采集经短事务获取租约
+    except MobileAutoError as exc:
+        print(f"[serve] 设备未就绪,服务降级启动:{exc}", file=sys.stderr)
+    app = create_app(session)
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="mobile-auto", description="Android 移动能力包命令行"
@@ -210,9 +233,19 @@ def main(argv: list[str] | None = None) -> int:
     doctor_parser.add_argument(
         "--config", type=Path, default=None, help="TOML 配置文件路径"
     )
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="启动本机网页调试服务(仅监听 127.0.0.1,默认端口 8765)",
+    )
+    serve_parser.add_argument(
+        "--config", type=Path, default=None, help="TOML 配置文件路径"
+    )
+    serve_parser.add_argument("--port", type=int, default=8765, help="服务端口")
     args = parser.parse_args(argv)
     if args.command == "doctor":
         return _cmd_doctor(args)
+    if args.command == "serve":
+        return _cmd_serve(args)
     raise AssertionError(f"未处理的命令:{args.command}")
 
 

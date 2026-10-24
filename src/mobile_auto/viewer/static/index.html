@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mobile-auto 查看器</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <span id="service">mobile-auto viewer</span>
+    <span id="device-state">设备:检测中…</span>
+    <span id="lease-state"></span>
+    <span id="freshness"></span>
+    <button id="btn-snapshot" type="button">采集快照(含 UI 树)</button>
+  </header>
+  <main>
+    <section id="preview-pane">
+      <h2>实时预览 <small id="preview-time"></small></h2>
+      <img id="preview" alt="设备画面" />
+      <p id="preview-message"></p>
+    </section>
+    <section id="tree-pane">
+      <h2>UI 树 <small id="tree-time"></small></h2>
+      <p id="tree-meta"></p>
+      <ul id="tree"></ul>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -21,3 +21,6 @@ build/
 
 # 真机测试本机配置(含设备序列号,不入库;示例见 local.toml.example)
 tests/device/local.toml
+
+# 运行日志
+.scratch/*.log
