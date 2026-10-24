@@ -67,14 +67,14 @@ def evidence(request):
 
 
 @pytest.fixture
-def adapter(mobile_config, request):
+def mobile_session(mobile_config, request):
+    """function 级设备会话;证据钩子(pytest_plugin)按名发现此 fixture。"""
     _wake_screen(mobile_config.device_serial)
     session = DeviceSession(mobile_config)
     session.start()
-    yield MobileAdapter(session)
+    yield session
 
     rep = getattr(request.node, "rep_call", None)
-    # xfail 用例的失败报告 outcome 是 skipped 且带 wasxfail 标记
     failed = rep is not None and (
         rep.failed or (rep.outcome == "skipped" and hasattr(rep, "wasxfail"))
     )
@@ -91,3 +91,8 @@ def adapter(mobile_config, request):
         except Exception as exc:  # 取证失败不覆盖原始测试错误
             print(f"[evidence] 取证失败(原始测试错误不受影响):{exc!r}", flush=True)
     session.close()
+
+
+@pytest.fixture
+def adapter(mobile_session):
+    return MobileAdapter(mobile_session)

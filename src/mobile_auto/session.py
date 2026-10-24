@@ -252,6 +252,13 @@ class DeviceSession:
         self._scrcpy_degraded_until = 0.0
         return png
 
+    def healthy_channel(self):
+        """已存在且健康的 scrcpy 通道;不主动启动(证据取证等尽力场景)。"""
+        channel = self._scrcpy_channel
+        if channel is not None and channel.healthy():
+            return channel
+        return None
+
     def close(self, timeout: float = _CLOSE_DRAIN_TIMEOUT_SECONDS) -> None:
         """有界排空后关闭;幂等。超时进入 FAULTED 并保留租约(plan 7.3)。
 

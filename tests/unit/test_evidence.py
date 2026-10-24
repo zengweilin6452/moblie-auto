@@ -30,6 +30,11 @@ class StubSession:
         self._state = state
         self._fail_submit = fail_submit
         self.submit_calls = 0
+        self._scrcpy_channel = None  # P1 工单 06:取证用视频通道(默认无)
+
+    def healthy_channel(self):
+        channel = self._scrcpy_channel
+        return channel if channel is not None and channel.healthy() else None
 
     @property
     def state(self):
@@ -39,7 +44,13 @@ class StubSession:
         self.submit_calls += 1
         if self._fail_submit is not None:
             raise self._fail_submit
-        return FutureDone((b"PNG-POST", "<hierarchy/>", (1080, 2400)))
+        # P1 工单 06:取证拆为两次提交——先画面(单值),后(树, 屏幕)
+        payload = (
+            b"PNG-POST"
+            if self.submit_calls % 2 == 1
+            else ("<hierarchy/>", (1080, 2400))
+        )
+        return FutureDone(payload)
 
 
 class FutureDone:

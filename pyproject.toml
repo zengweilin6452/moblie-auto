@@ -37,6 +37,9 @@ dev = [
 [project.scripts]
 mobile-auto = "mobile_auto.cli:main"
 
+[project.entry-points.pytest11]
+mobile-auto-evidence = "mobile_auto.pytest_plugin"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/mobile_auto"]
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -43,9 +44,12 @@ def collect_failure_evidence(
     operation_frames 为操作时使用的画面(调用方在操作过程中采集),
     与失败后新采集的画面分开保存,不互相冒充。本函数尽力采集:
     设备不可用、超时与写入失败归因为"无法采集",不向上抛出非证据错误。
+    失败后画面优先取 scrcpy 视频帧(毫秒级,不占 u2 队列,P1 工单 06);
+    通道不可用回退 u2 截图,frame_source 如实标注来源。
     """
     config = session.config
     created_at = _utc_now()
+    failure_at = time.monotonic()
     evidence_id = f"{uuid.uuid4().hex[:16]}"
     base_dir = Path(config.artifacts_dir) / "evidence" / evidence_id
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -67,7 +71,9 @@ def collect_failure_evidence(
         )
 
     # 失败后新采集的画面与 UI 树:有界取证
-    frame, tree, screen, reason = _capture_post_failure(session, timeout)
+    frame, tree, screen, reason, frame_source = _capture_post_failure(
+        session, timeout, failure_at
+    )
     capture_time = _utc_now()
     if reason is not None:
         not_captured.append({"kind": "post-failure", "reason": reason})
@@ -91,6 +97,7 @@ def collect_failure_evidence(
             "app_package": config.app_package,
             "screen_size": list(screen) if screen else None,
         },
+        "frame_source": frame_source,
         "artifacts": artifacts,
         "not_captured": not_captured,
     }
@@ -103,6 +110,7 @@ def collect_failure_evidence(
         "device_serial": session.serial,
         "app_package": config.app_package,
         "failure_type": failure_info["type"],
+        "frame_source": frame_source,
         "artifacts": [a["name"] for a in artifacts],
         "not_captured": not_captured,
     }
@@ -112,29 +120,66 @@ def collect_failure_evidence(
     return record
 
 
-def _capture_post_failure(session: DeviceSession, timeout: float):
-    """失败后采集(截图、UI 树、屏幕尺寸);返回 (frame, tree, screen, reason)。
+def _capture_post_failure(session: DeviceSession, timeout: float, failure_at: float):
+    """失败后采集(画面、UI 树、屏幕尺寸);返回 (frame, tree, screen,
+    reason, frame_source)。
 
-    FAULTED 会话不再调用设备线程(plan 7.3);提交与等待均有界。
+    画面:会话已持有的健康 scrcpy 通道取视频帧(不主动启动通道、
+    不占 u2 队列);否则回退 u2 截图。FAULTED 会话不再调用设备线程
+    (plan 7.3);提交与等待均有界。frame_source ∈
+    {"scrcpy-video", "u2", None};capture_lag 为取证耗时毫秒。
     """
     if session.state == SessionState.FAULTED:
-        return None, None, None, "会话 FAULTED,不再调用设备线程;仅保存已有材料"
+        return None, None, None, "会话 FAULTED,不再调用设备线程;仅保存已有材料", None
+
+    frame = None
+    source = None
+    channel = session.healthy_channel()
+    if channel is not None:
+        try:
+            jpeg, width, height = channel.latest_frame()
+            frame = _jpeg_to_png(jpeg)
+            source = "scrcpy-video"
+        except Exception:
+            frame = None  # 通道取帧失败:回退 u2,不吞掉树采集机会
+    if frame is None:
+        try:
+            future = session.submit(lambda backend: backend.screenshot_png())
+        except SessionFaulted as exc:
+            return None, None, None, f"提交取证被拒绝:{exc}", None
+        try:
+            frame = future.result(timeout=timeout)
+            source = "u2"
+        except Exception as exc:
+            future.cancel()
+            return None, None, None, f"取证未完成({type(exc).__name__}),已放弃等待", None
+
+    tree = None
+    screen = None
     try:
         future = session.submit(
-            lambda backend: (
-                backend.screenshot_png(),
-                backend.dump_ui(),
-                backend.screen_size(),
-            )
+            lambda backend: (backend.dump_ui(), backend.screen_size())
         )
-    except SessionFaulted as exc:
-        return None, None, None, f"提交取证被拒绝:{exc}"
-    try:
-        frame, tree, screen = future.result(timeout=timeout)
-        return frame, tree, screen, None
-    except Exception as exc:  # 超时或执行失败:放弃等待,留因不挂起
-        future.cancel()
-        return None, None, None, f"取证未完成({type(exc).__name__}),已放弃等待"
+        tree, screen = future.result(timeout=timeout)
+    except Exception as exc:
+        reason = f"UI 树取证未完成({type(exc).__name__})"
+        tree, screen = None, None
+    else:
+        reason = None
+
+    capture_lag_ms = round((time.monotonic() - failure_at) * 1000, 1)
+    return frame, tree, screen, reason, {"source": source, "capture_lag_ms": capture_lag_ms}
+
+
+def _jpeg_to_png(jpeg: bytes) -> bytes | None:
+    import cv2
+    import numpy as np
+
+    decoded = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if decoded is None:
+        return None
+    ok, buf = cv2.imencode(".png", decoded)
+    return buf.tobytes() if ok else None
 
 
 # ── 运行清单:证据读取的唯一入口(plan 8.2)────────────────────
