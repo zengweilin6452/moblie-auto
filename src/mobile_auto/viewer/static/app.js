@@ -115,6 +115,7 @@ function toPixelCoords(event) {
 }
 
 async function pickAt(event) {
+  if (control.enabled) return; // 控制模式:画面点击是注入,不是拾取
   if (!state.snapshotId) {
     $("pick-hint").textContent = "请先采集快照。";
     return;
@@ -198,6 +199,88 @@ async function validatePicked() {
   $("validate-note").textContent = `匹配 ${data.count} 个 · ${data.note}`;
 }
 
+/* ── 直接控制(工单 04)────────────────────────────────── */
+
+const control = { enabled: false, dragStart: null };
+
+async function apiPost(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`${data.code || res.status}:${data.message || ""}`);
+  return data;
+}
+
+async function setControlMode(enabled) {
+  if (enabled && !confirm("直接控制会向真机发送点击/滑动。\n确认启用?")) return;
+  try {
+    await apiPost("/api/v1/control", { enabled });
+  } catch (err) {
+    $("control-note").textContent = `切换失败 ${err.message}`;
+    enabled = false;
+  }
+  control.enabled = enabled;
+  $("control-toggle").checked = enabled;
+  $("stage").classList.toggle("control-mode", enabled);
+  for (const id of ["btn-key-back", "btn-key-home", "btn-wake"]) {
+    $(id).disabled = !enabled;
+  }
+  $("control-note").textContent = enabled
+    ? "控制中:点击画面=单击,拖动=滑动;拾取已暂停"
+    : "";
+}
+
+async function inject(path, body) {
+  if (!control.enabled) return;
+  try {
+    await apiPost(path, body);
+  } catch (err) {
+    $("control-note").textContent = `注入失败 ${err.message}`;
+  }
+}
+
+function normCoords(event) {
+  const rect = $("preview").getBoundingClientRect();
+  return {
+    nx: Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1),
+    ny: Math.min(Math.max((event.clientY - rect.top) / rect.height, 0), 1),
+  };
+}
+
+function setupControl() {
+  $("control-toggle").addEventListener("change", (event) => {
+    setControlMode(event.target.checked);
+  });
+  $("btn-key-back").addEventListener("click", () => inject("/api/v1/input/key", { name: "back" }));
+  $("btn-key-home").addEventListener("click", () => inject("/api/v1/input/key", { name: "home" }));
+  $("btn-wake").addEventListener("click", () => inject("/api/v1/input/wake"));
+
+  const img = $("preview");
+  img.addEventListener("mousedown", (event) => {
+    if (!control.enabled) return;
+    control.dragStart = { ...normCoords(event), at: performance.now(), clientX: event.clientX, clientY: event.clientY };
+    event.preventDefault();
+  });
+  window.addEventListener("mouseup", (event) => {
+    if (!control.enabled || !control.dragStart) return;
+    const start = control.dragStart;
+    control.dragStart = null;
+    const end = normCoords(event);
+    const movedPx = Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY);
+    if (movedPx < 12) {
+      inject("/api/v1/input/touch", { nx: end.nx, ny: end.ny });
+    } else {
+      inject("/api/v1/input/swipe", {
+        nx0: start.nx, ny0: start.ny, nx1: end.nx, ny1: end.ny,
+        duration_ms: Math.max(performance.now() - start.at, 120),
+      });
+    }
+  });
+}
+
 /* ── 标签页 ──────────────────────────────────────────────── */
 
 function setupTabs() {
@@ -269,6 +352,7 @@ function setupMarquee() {
   const img = $("preview");
   let start = null;
   img.addEventListener("mousedown", (event) => {
+    if (control.enabled) return; // 控制模式互斥:不进入模板框选
     if (!imageTabActive() || !state.snapshotId) return;
     start = toPixelCoords(event);
     const box = document.createElement("div");
@@ -404,6 +488,7 @@ $("tpl-confidence").addEventListener("change", () => {
   if (imageState.logical) setImageExpression();
 });
 setupMarquee();
+setupControl();
 $("btn-validate").addEventListener("click", validatePicked);
 $("btn-copy").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("expression").textContent);

@@ -195,8 +195,15 @@ class _ChannelManager:
         return channel
 
     def _start_via_lease(self) -> ScrcpyChannel | None:
+        acquired = False
         try:
-            self._session.acquire_lease()
+            state = self._session.state
+            if state == SessionState.READY:
+                self._session.acquire_lease()
+                acquired = True
+            elif state != SessionState.LEASED:
+                raise DeviceUnavailable(f"会话状态 {state.value} 不允许启动视频流")
+            # 本进程已持租约(如控制注入短事务内):直接复用,不重复获取
             try:
                 factory = self._channel_factory or (
                     lambda serial: ScrcpyChannel(serial)
@@ -204,7 +211,8 @@ class _ChannelManager:
                 channel = factory(self._session.serial)
                 channel.start()
             finally:
-                self._session.release_lease()
+                if acquired:
+                    self._session.release_lease()
         except Exception as exc:
             with self._lock:
                 self._last_error = f"视频流启动失败:{exc}"
@@ -297,6 +305,10 @@ def create_app(
     app.state.preview_interval = preview_interval
     app.state.stream_interval = stream_interval
     app.state.channel_manager = channel_manager or _ChannelManager(session)
+    manager = app.state.channel_manager
+    # 直接控制(P1 工单 04):显式启用,默认关闭
+    app.state.control_enabled = False
+    app.state.last_inject = 0.0
 
     @app.middleware("http")
     async def request_id_and_origin(request: Request, call_next):
@@ -635,6 +647,149 @@ def create_app(
         finally:
             app.state.ws_clients -= 1
             manager.client_disconnected()
+
+    # ── 直接控制(P1 工单 04;显式启用)────────────────────────
+
+    _INJECT_MIN_INTERVAL_SECONDS = 0.05  # 注入节流
+
+    @app.post("/api/v1/control")
+    async def set_control_mode(request: Request):
+        body = await request.json()
+        enabled = bool(body.get("enabled"))
+        app.state.control_enabled = enabled
+        return {
+            "enabled": enabled,
+            "request_id": request.state.request_id,
+            "note": "直接控制已启用" if enabled else "直接控制已关闭",
+        }
+
+    def _gate_control(request: Request) -> JSONResponse | None:
+        """控制模式与节流门控;通过返回 None。"""
+        if not app.state.control_enabled:
+            return error_envelope(request, 400, "control-disabled", "直接控制未启用")
+        now = time.monotonic()
+        if now - app.state.last_inject < _INJECT_MIN_INTERVAL_SECONDS:
+            return error_envelope(request, 429, "throttled", "注入过于频繁(≥50ms 间隔)")
+        app.state.last_inject = now
+        return None
+
+    def _normalized(body: dict, names: tuple[str, ...]) -> list[float] | None:
+        values = []
+        for name in names:
+            value = body.get(name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            values.append(min(max(float(value), 0.0), 1.0))
+        return values
+
+    def _inject(operation):
+        """短事务注入:租约(409 门控)→ 队列串行执行 → 释放。
+
+        视频通道经管理器获取(懒启动遵循同一租约门控);注入不成功不
+        释放租约的窗口极小且不回滚,失败时如实报错。
+        """
+        session.acquire_lease()  # LEASED(pytest 持有)→ DeviceBusy → 409
+        try:
+            channel = manager.channel()
+            if channel is None or not channel.healthy():
+                raise StreamUnavailable("视频流通道不可用,无法注入")
+            future = session.submit(lambda backend: operation(channel))
+            try:
+                return future.result(timeout=10.0)
+            except TimeoutError as exc:
+                future.cancel()
+                raise DeviceUnavailable("注入执行超时") from exc
+        finally:
+            session.release_lease()
+
+    @app.post("/api/v1/input/touch")
+    async def input_touch(request: Request):
+        body = await request.json()
+        gate = _gate_control(request)
+        if gate is not None:
+            return gate
+        values = _normalized(body, ("nx", "ny"))
+        if values is None:
+            return error_envelope(request, 422, "invalid-input", "nx/ny 必须是数值")
+        nx, ny = values
+        try:
+            await asyncio.to_thread(
+                _inject,
+                lambda channel: channel.tap(
+                    *(
+                        lambda size: (
+                            int(nx * size[0]),
+                            int(ny * size[1]),
+                        )
+                    )(channel.screen_size())
+                ),
+            )
+        except MobileAutoError as exc:
+            status = _ERROR_STATUS.get(type(exc), 400)
+            return error_envelope(request, status, type(exc).__name__, str(exc))
+        return {"ok": True, "request_id": request.state.request_id}
+
+    @app.post("/api/v1/input/swipe")
+    async def input_swipe(request: Request):
+        body = await request.json()
+        gate = _gate_control(request)
+        if gate is not None:
+            return gate
+        values = _normalized(body, ("nx0", "ny0", "nx1", "ny1"))
+        if values is None:
+            return error_envelope(
+                request, 422, "invalid-input", "nx0/ny0/nx1/ny1 必须是数值"
+            )
+        nx0, ny0, nx1, ny1 = values
+        duration_ms = body.get("duration_ms", 300)
+        if isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float)):
+            return error_envelope(request, 422, "invalid-input", "duration_ms 必须是数值")
+        duration_s = min(max(float(duration_ms) / 1000, 0.05), 5.0)
+        try:
+            await asyncio.to_thread(
+                _inject,
+                lambda channel: channel.swipe(
+                    *(
+                        lambda size: (
+                            int(nx0 * size[0]),
+                            int(ny0 * size[1]),
+                            int(nx1 * size[0]),
+                            int(ny1 * size[1]),
+                        )
+                    )(channel.screen_size()),
+                    duration_s=duration_s,
+                ),
+            )
+        except MobileAutoError as exc:
+            status = _ERROR_STATUS.get(type(exc), 400)
+            return error_envelope(request, status, type(exc).__name__, str(exc))
+        return {"ok": True, "request_id": request.state.request_id}
+
+    @app.post("/api/v1/input/key")
+    async def input_key(request: Request):
+        body = await request.json()
+        gate = _gate_control(request)
+        if gate is not None:
+            return gate
+        name = str(body.get("name") or "")
+        try:
+            await asyncio.to_thread(_inject, lambda channel: channel.press_key(name))
+        except MobileAutoError as exc:
+            status = _ERROR_STATUS.get(type(exc), 400)
+            return error_envelope(request, status, type(exc).__name__, str(exc))
+        return {"ok": True, "request_id": request.state.request_id}
+
+    @app.post("/api/v1/input/wake")
+    async def input_wake(request: Request):
+        gate = _gate_control(request)
+        if gate is not None:
+            return gate
+        try:
+            await asyncio.to_thread(_inject, lambda channel: channel.wake())
+        except MobileAutoError as exc:
+            status = _ERROR_STATUS.get(type(exc), 400)
+            return error_envelope(request, status, type(exc).__name__, str(exc))
+        return {"ok": True, "request_id": request.state.request_id}
 
     app.state.static_dir = _STATIC_DIR
     app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")

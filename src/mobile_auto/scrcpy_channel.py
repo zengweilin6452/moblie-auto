@@ -284,6 +284,39 @@ class ScrcpyChannel:
         payload = _TOUCH_MSG.pack(int(action), -1, x, y, width, height, 0xFFFF, 1)
         self._send(ctrl, ControlType.INJECT_TOUCH_EVENT, payload)
 
+    def tap(self, x: int, y: int) -> None:
+        """单击:DOWN → 短暂按住 → UP;坐标为设备像素。"""
+        import time as _time
+
+        from wetest.scrcpy import Action
+
+        self.touch(x, y, Action.DOWN)
+        _time.sleep(0.02)
+        self.touch(x, y, Action.UP)
+
+    def press_key(self, name: str) -> None:
+        """注入有限按键(back/home);未知名称报 InvalidTarget 语义错误。"""
+        from wetest.scrcpy import KeyCode
+
+        from .errors import InvalidTarget
+
+        mapping = {"back": KeyCode.BACK, "home": KeyCode.HOME}
+        if name not in mapping:
+            raise InvalidTarget(f"不支持的按键:{name!r};支持:back / home")
+        try:
+            self._require_ctrl().press_button(mapping[name])
+        except Exception as exc:
+            raise StreamUnavailable(f"scrcpy 按键注入失败:{exc}") from exc
+
+    def wake(self) -> None:
+        """点亮屏幕(不熄屏、不旋转)。"""
+        from wetest.scrcpy import PowerMode
+
+        try:
+            self._require_ctrl().set_screen_power_mode(PowerMode.NORMAL)
+        except Exception as exc:
+            raise StreamUnavailable(f"scrcpy 亮屏失败:{exc}") from exc
+
     def swipe(
         self, x0: int, y0: int, x1: int, y1: int, duration_s: float = 0.3
     ) -> None:
