@@ -6,11 +6,11 @@
 
 **Status:** resolved
 
-- [ ] wheel 构建成功，包含前端静态资源与示例
-- [ ] 全新虚拟环境安装 wheel 后：doctor、原生示例、IMAGE 示例全部通过
+- [x] wheel 构建成功，包含前端静态资源与示例
+- [x] 全新虚拟环境安装 wheel 后：doctor、原生示例、IMAGE 示例全部通过
 - [x] 含中文或空格的路径下安装与运行正常
-- [ ] 模板资产相对路径迁移验证；运行时不发起外部网络请求（完整离线安装包另行验收）
-- [ ] 依赖锁定清单与 pip check 干净；image/viewer/dev extras 按需安装可用
+- [x] 模板资产相对路径迁移验证；运行时不发起外部网络请求（完整离线安装包另行验收）
+- [x] 依赖锁定清单与 pip check 干净；image/viewer/dev extras 按需安装可用
 
 
 ## Answer
