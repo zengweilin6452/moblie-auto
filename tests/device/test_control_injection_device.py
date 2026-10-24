@@ -57,7 +57,7 @@ async def test_tap_opens_wlan_page(control_http):
     assert client.post("/api/v1/input/touch", json=_norm_center(element.bounds)).status_code == 200
     # 子页打开:子页特有元素出现即成功(页面过渡轮询,不定长等待)
     assert await _wait_true(
-        lambda: adapter.is_visible(Target(Locator.TEXT, "高级设置"))
+        lambda: adapter.is_visible(Target(Locator.TEXT, "网络加速"))
     )
 
 
@@ -72,7 +72,7 @@ async def test_back_key_returns_from_subpage(control_http):
     assert await adapter.wait_for(row) is True
     (element,) = await adapter.find_elements(row)
     assert client.post("/api/v1/input/touch", json=_norm_center(element.bounds)).status_code == 200
-    assert await _wait_true(lambda: adapter.is_visible(Target(Locator.TEXT, "高级设置")))
+    assert await _wait_true(lambda: adapter.is_visible(Target(Locator.TEXT, "网络加速")))
     _inject_gap()
     assert client.post("/api/v1/input/key", json={"name": "back"}).status_code == 200
     assert await _wait_true(lambda: adapter.is_visible(row))

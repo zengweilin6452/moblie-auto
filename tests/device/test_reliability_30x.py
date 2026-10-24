@@ -21,9 +21,9 @@ async def _native_once(adapter) -> None:
     wlan = Target(Locator.TEXT, "WLAN")
     assert await adapter.wait_for(wlan), "主页 WLAN 未出现"
     await adapter.click(wlan)
-    advanced = Target(Locator.TEXT, "高级设置")
+    advanced = Target(Locator.TEXT, "网络加速")
     assert await adapter.wait_for(advanced), "WLAN 子页未打开"
-    assert await adapter.get_text(advanced) == "高级设置"
+    assert await adapter.get_text(advanced) == "网络加速"
 
 
 async def _image_once(adapter, mobile_config, logical: str) -> None:
@@ -31,7 +31,7 @@ async def _image_once(adapter, mobile_config, logical: str) -> None:
     target = Target(Locator.IMAGE, logical)
     assert await adapter.wait_for(target), "图像目标未出现"
     await adapter.click(target)
-    assert await adapter.wait_for(Target(Locator.TEXT, "高级设置")), "子页未打开"
+    assert await adapter.wait_for(Target(Locator.TEXT, "网络加速")), "子页未打开"
 
 
 @pytest.mark.device

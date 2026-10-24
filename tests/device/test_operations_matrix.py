@@ -51,9 +51,9 @@ async def test_native_operations_matrix(adapter):
 
     # ── 句柄重用:目标消失后报句柄过期,不指向新节点 ─────────
     # (主/子页标题的 class+resourceId 相同,原生句柄身份不含位置;
-    #  用仅存在于子页的"高级设置"演示目标消失的过期路径)
+    #  用仅存在于子页的"网络加速"演示目标消失的过期路径)
     await adapter.click(wlan)  # 进入 WLAN 子页
-    advanced = Target(Locator.TEXT, "高级设置")
+    advanced = Target(Locator.TEXT, "网络加速")
     assert await adapter.wait_for(advanced) is True
     (sub_handle,) = await adapter.find_elements(advanced)
     await adapter.back()

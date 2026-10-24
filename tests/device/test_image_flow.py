@@ -68,5 +68,5 @@ async def test_image_template_click_business_flow(adapter, mobile_config):
     await adapter.click(image_target)
 
     # 后置业务断言:进入 WLAN 子页
-    advanced = Target(Locator.TEXT, "高级设置")
+    advanced = Target(Locator.TEXT, "网络加速")
     assert await adapter.wait_for(advanced) is True

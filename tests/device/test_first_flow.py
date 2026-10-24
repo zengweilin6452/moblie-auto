@@ -31,11 +31,11 @@ async def test_first_native_flow_launch_locate_click_assert_screenshot(adapter):
 
     # 点击:进入 WLAN 子页
     await adapter.click(wlan_row)
-    advanced = Target(Locator.TEXT, "高级设置")
+    advanced = Target(Locator.TEXT, "网络加速")
     assert await adapter.wait_for(advanced) is True
 
     # 断言:读取文本
-    assert await adapter.get_text(advanced) == "高级设置"
+    assert await adapter.get_text(advanced) == "网络加速"
 
     # 枚举:子页标题恰有一个匹配,句柄携带 bounds
     handles = await adapter.find_elements(Target(Locator.TEXT, "WLAN"))

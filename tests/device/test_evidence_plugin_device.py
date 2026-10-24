@@ -36,6 +36,8 @@ def test_plugin_attaches_video_frame_evidence(mobile_config):
         result = subprocess.run(
             [
                 sys.executable, "-m", "pytest", str(child),
+                # -p 显式加载:不依赖 editable 安装元数据中 pytest11 入口点的鲜度
+                "-p", "mobile_auto.evidence.pytest_plugin",
                 "--mobile-evidence", "-q",
                 "--mobile-config", "tests/device/local.toml",
             ],

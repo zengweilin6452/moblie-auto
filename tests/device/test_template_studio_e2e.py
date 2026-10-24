@@ -90,6 +90,6 @@ def test_template_studio_end_to_end_click(viewer):
     asyncio.run(adapter.click(target))
 
     # 5. 后置业务断言:进入 WLAN 子页
-    advanced = Target(Locator.TEXT, "高级设置")
+    advanced = Target(Locator.TEXT, "网络加速")
     assert asyncio.run(adapter.wait_for(advanced)) is True
     assert created["width"] == region[2] and created["height"] == region[3]
