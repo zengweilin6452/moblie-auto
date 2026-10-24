@@ -1,0 +1,34 @@
+{
+  "evidence_id": "b29c6d62d6844122",
+  "created_at": "2026-10-24T05:38:01.564+00:00",
+  "failure": {
+    "type": "Failure",
+    "message": "adapter = <mobile_auto.adapter.MobileAdapter object at 0x000001F4A89859D0>\nevidence = <conftest.evidence.<locals>._Recorder object at 0x000001F4A89DCDA0>\n\n    @pytest.mark.device\n    @pytest.mark.xfail(reason=\"故意失败以验证失败证据产出(工单 05)\", strict=True)\n    async def test_intentional_failure_records_evidence(adapter, evidence):\n        await adapter.goto(\"\")\n        assert await adapter.wait_for(Target(Locator.TEXT, \"WLAN\")) is True\n        png = await adapter.screenshot()\n        evidence.record_frame(png, \"op-frame\")\n>       raise AssertionError(\"故意失败:验证失败证据被收集\")\nE       AssertionError: 故意失败:验证失败证据被收集\n\ntests\\device\\test_failure_evidence.py:20: AssertionError"
+  },
+  "device": {
+    "serial": "749622c9",
+    "app_package": "com.android.settings",
+    "screen_size": [
+      1080,
+      2400
+    ]
+  },
+  "artifacts": [
+    {
+      "name": "operation-op-frame.png",
+      "kind": "operation-frame",
+      "captured_at": "2026-10-24T05:38:01.564+00:00"
+    },
+    {
+      "name": "failure-frame.png",
+      "kind": "failure-frame",
+      "captured_at": "2026-10-24T05:38:02.003+00:00"
+    },
+    {
+      "name": "ui-tree.xml",
+      "kind": "ui-tree",
+      "captured_at": "2026-10-24T05:38:02.003+00:00"
+    }
+  ],
+  "not_captured": []
+}
