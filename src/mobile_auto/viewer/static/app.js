@@ -220,14 +220,41 @@ function connectPreview() {
     const frame = JSON.parse(event.data);
     $("freshness").textContent = `帧时间 ${frame.captured_at}`;
     if (frame.kind === "frame") {
-      $("preview").src = `data:image/jpeg;base64,${frame.jpeg_base64}`;
-      $("preview-time").textContent = frame.captured_at;
+      if (frame.source === "scrcpy") {
+        $("preview").src = `data:image/jpeg;base64,${frame.jpeg_base64}`;
+        $("preview-time").textContent = `${frame.captured_at} · ${frame.width}x${frame.height}`;
+        setStreamNotice("");
+        setPauseMask(false);
+      } else {
+        // u2 截图回退:画面节奏回到 1s 档,如实提示原因
+        $("preview").src = `data:image/jpeg;base64,${frame.jpeg_base64}`;
+        $("preview-time").textContent = frame.captured_at;
+        setStreamNotice(
+          `视频流不可用,已回退截图轮询${frame.fallback_reason ? ":" + frame.fallback_reason : ""}`,
+        );
+        setPauseMask(false);
+      }
       $("preview-message").textContent = "";
+    } else if (frame.kind === "status" && frame.busy) {
+      // 租约被他人持有:保留末帧 + 遮罩,不冒充实时
+      setPauseMask(true, frame.message);
     } else {
       $("preview-message").textContent = frame.message || "预览暂不可用";
     }
   };
   ws.onclose = () => setTimeout(connectPreview, 2000);
+}
+
+function setStreamNotice(text) {
+  const el = $("stream-notice");
+  el.textContent = text;
+  el.classList.toggle("hidden", !text);
+}
+
+function setPauseMask(paused, reason) {
+  const mask = $("pause-mask");
+  mask.classList.toggle("hidden", !paused);
+  if (paused) $("pause-reason").textContent = reason || "";
 }
 
 /* ── 图像模板制作(工单 11)──────────────────────────────── */

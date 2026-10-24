@@ -109,6 +109,18 @@ def client(tmp_path):
     )
     session.start()
     session.release_lease()
-    app = create_app(session, SnapshotStore(), preview_interval=0.1)
+
+    def no_channel(serial):  # 单测不触碰 adb:视频流始终启动失败,走 u2 回退
+        from mobile_auto.errors import StreamUnavailable
+
+        raise StreamUnavailable("单测禁用视频流")
+
+    from mobile_auto.viewer.app import _ChannelManager
+
+    manager = _ChannelManager(session, retry_init=0.05, channel_factory=no_channel)
+    app = create_app(
+        session, SnapshotStore(), preview_interval=0.1, channel_manager=manager
+    )
     yield TestClient(app), session, session._backend
+    manager.shutdown()
     session.close()

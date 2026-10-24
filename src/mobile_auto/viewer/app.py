@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +35,7 @@ from ..errors import (
     StreamUnavailable,
     UnsupportedOperation,
 )
+from ..scrcpy_channel import ScrcpyChannel
 from ..selectors import (
     select_matches,
     validate_locatable,
@@ -43,8 +46,13 @@ from ..ui_tree import flatten, parse_ui_hierarchy
 from .candidates import candidates_for_node, xpath_candidate
 from .store import Snapshot, SnapshotStore
 
-_PREVIEW_INTERVAL_SECONDS = 1.0
+_PREVIEW_INTERVAL_SECONDS = 1.0  # u2 截图回退档帧间隔
+_STREAM_INTERVAL_SECONDS = 0.1  # 视频流档帧间隔(目标 ~10fps)
 _MAX_WS_CLIENTS = 2
+_CHANNEL_IDLE_STOP_SECONDS = 30.0  # 无客户端后 server 自停
+_CHANNEL_RETRY_BACKOFF_INIT = 2.0
+_CHANNEL_RETRY_BACKOFF_MAX = 30.0
+_LEASE_PROBE_MIN_INTERVAL = 1.0  # 租约探测节流:降低与 pytest 抢锁的碰撞面
 
 _CAPTURE_TIMEOUT_SECONDS = 10.0
 _TREE_INTERVAL_LIMIT_SECONDS = 1.0  # 截图与树采集间隔超限判定(快照不一致)
@@ -79,11 +87,206 @@ def error_envelope(request: Request, status: int, code: str, message: str) -> JS
     )
 
 
+class _ChannelManager:
+    """viewer 进程内的 scrcpy 通道:懒启动、退避重试、空闲自停(工单 02)。
+
+    server 启动是设备写操作,经会话租约执行;租约被他人持有或启动失败
+    都不致命——预览回退 u2 截图轮询,并按退避自动重试恢复视频流。
+    """
+
+    def __init__(
+        self,
+        session: DeviceSession,
+        *,
+        idle_stop: float = _CHANNEL_IDLE_STOP_SECONDS,
+        retry_init: float = _CHANNEL_RETRY_BACKOFF_INIT,
+        retry_max: float = _CHANNEL_RETRY_BACKOFF_MAX,
+        channel_factory=None,
+    ) -> None:
+        self._session = session
+        self._idle_stop = idle_stop
+        self._retry_init = retry_init
+        self._retry_max = retry_max
+        self._channel_factory = channel_factory  # None → 真实 ScrcpyChannel
+        self._lock = threading.Lock()
+        self._start_lock = threading.Lock()
+        self._channel: ScrcpyChannel | None = None
+        self._clients = 0
+        self._idle_timer: threading.Timer | None = None
+        self._next_retry = 0.0
+        self._backoff = retry_init
+        self._last_error: str | None = None
+        self._lease_probe_at = 0.0
+        self._lease_probe_ok = False
+
+    @property
+    def last_error(self) -> str | None:
+        with self._lock:
+            return self._last_error
+
+    def client_connected(self) -> None:
+        with self._lock:
+            self._clients += 1
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+                self._idle_timer = None
+
+    def client_disconnected(self) -> None:
+        with self._lock:
+            self._clients = max(0, self._clients - 1)
+            if self._clients == 0 and self._idle_timer is None:
+                self._idle_timer = threading.Timer(self._idle_stop, self._stop_idle)
+                self._idle_timer.daemon = True
+                self._idle_timer.start()
+
+    def _stop_idle(self) -> None:
+        with self._lock:
+            if self._clients == 0 and self._channel is not None:
+                self._channel.stop()
+                self._channel = None
+                self._backoff = self._retry_init
+
+    def invalidate(self, reason: str) -> None:
+        """通道损坏(空帧/连接断):回收并安排退避重试;本轮回退 u2。"""
+        with self._lock:
+            if self._channel is not None:
+                self._channel.stop()
+                self._channel = None
+            self._last_error = reason
+            self._next_retry = time.monotonic() + self._backoff
+            self._backoff = min(self._backoff * 2, self._retry_max)
+
+    def lease_available(self) -> bool:
+        """租约是否空闲(节流探测,≤1Hz);探测即短暂 acquire→release。"""
+        with self._lock:
+            now = time.monotonic()
+            if now - self._lease_probe_at < _LEASE_PROBE_MIN_INTERVAL:
+                return self._lease_probe_ok
+            self._lease_probe_at = now
+        state = self._session.state
+        if state not in (SessionState.READY, SessionState.LEASED):
+            with self._lock:
+                self._lease_probe_ok = False
+            return False
+        try:
+            self._session.acquire_lease()
+        except MobileAutoError:
+            with self._lock:
+                self._lease_probe_ok = False
+            return False
+        self._session.release_lease()
+        with self._lock:
+            self._lease_probe_ok = True
+        return True
+
+    def channel(self) -> ScrcpyChannel | None:
+        """可用通道;未启动/待重试则按退避懒启动(经租约)。"""
+        with self._lock:
+            if self._channel is not None:
+                return self._channel
+            if time.monotonic() < self._next_retry:
+                return None
+        if not self._start_lock.acquire(blocking=False):
+            return None  # 另一客户端正在启动,本轮先回退
+        try:
+            channel = self._start_via_lease()
+        finally:
+            self._start_lock.release()
+        return channel
+
+    def _start_via_lease(self) -> ScrcpyChannel | None:
+        try:
+            self._session.acquire_lease()
+            try:
+                factory = self._channel_factory or (
+                    lambda serial: ScrcpyChannel(serial)
+                )
+                channel = factory(self._session.serial)
+                channel.start()
+            finally:
+                self._session.release_lease()
+        except Exception as exc:
+            with self._lock:
+                self._last_error = f"视频流启动失败:{exc}"
+                self._next_retry = time.monotonic() + self._backoff
+                self._backoff = min(self._backoff * 2, self._retry_max)
+            return None
+        with self._lock:
+            self._channel = channel
+            self._last_error = None
+            self._backoff = self._retry_init
+        return channel
+
+    def shutdown(self) -> None:
+        """进程内显式回收(测试用);运行中依赖空闲计时与 shell 流 EOF 兜底。"""
+        with self._lock:
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+                self._idle_timer = None
+            if self._channel is not None:
+                self._channel.stop()
+                self._channel = None
+
+
+def _build_stream_frame(
+    manager: _ChannelManager, session: DeviceSession, store: SnapshotStore
+) -> dict:
+    """预览帧构建:视频流优先,租约被占/通道不可用回退 u2 截图(工单 02)。
+
+    会话故障或租约被他人持有时发状态帧,不显示旧画面冒充实时。
+    """
+    now = datetime.now(UTC).isoformat(timespec="milliseconds")
+    if session.state not in (SessionState.READY, SessionState.LEASED):
+        busy = session.state == SessionState.LEASED
+        return {
+            "kind": "status",
+            "captured_at": now,
+            "device_state": session.state.value,
+            "busy": busy,
+            "message": "设备忙,暂停采集" if busy else "设备未就绪",
+        }
+    if not manager.lease_available():
+        return {
+            "kind": "status",
+            "captured_at": now,
+            "device_state": session.state.value,
+            "busy": True,
+            "message": "设备被其他进程占用(如测试运行中),画面已暂停",
+        }
+    channel = manager.channel()
+    if channel is not None:
+        if not channel.healthy():
+            manager.invalidate("scrcpy 通道不健康(连接断开或泵线程停止)")
+        else:
+            started = time.monotonic()
+            try:
+                jpeg, width, height = channel.latest_frame()
+            except StreamUnavailable as exc:
+                manager.invalidate(str(exc))
+            else:
+                return {
+                    "kind": "frame",
+                    "source": "scrcpy",
+                    "captured_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                    "width": width,
+                    "height": height,
+                    "decode_ms": round((time.monotonic() - started) * 1000, 1),
+                    "jpeg_base64": base64.b64encode(jpeg).decode("ascii"),
+                }
+    frame = _build_preview_frame(session, store)
+    if frame.get("kind") == "frame":
+        frame["source"] = "u2-fallback"
+        frame["fallback_reason"] = manager.last_error
+    return frame
+
+
 def create_app(
     session: DeviceSession,
     store: SnapshotStore | None = None,
     *,
     preview_interval: float = _PREVIEW_INTERVAL_SECONDS,
+    stream_interval: float = _STREAM_INTERVAL_SECONDS,
+    channel_manager: _ChannelManager | None = None,
 ) -> FastAPI:
     """构建网页应用;会话由调用方注入(lifespan 不拥有启动/关闭)。"""
     store = store or SnapshotStore()
@@ -92,6 +295,8 @@ def create_app(
     app.state.store = store
     app.state.session = session
     app.state.preview_interval = preview_interval
+    app.state.stream_interval = stream_interval
+    app.state.channel_manager = channel_manager or _ChannelManager(session)
 
     @app.middleware("http")
     async def request_id_and_origin(request: Request, call_next):
@@ -404,22 +609,32 @@ def create_app(
             await ws.close(code=4429)
             return
         app.state.ws_clients += 1
+        manager: _ChannelManager = app.state.channel_manager
+        manager.client_connected()
         try:
             await ws.accept()
             sender = _PreviewSender(ws)
             app.state.preview_sender = sender
             try:
                 while True:
-                    await sender.send_latest(
-                        _build_preview_frame(session, store)
+                    frame = await asyncio.to_thread(
+                        _build_stream_frame, manager, session, store
                     )
-                    await asyncio.sleep(app.state.preview_interval)
+                    await sender.send_latest(frame)
+                    # 视频流档 ~10fps;回退/状态档退回 u2 截图节奏
+                    interval = (
+                        app.state.stream_interval
+                        if frame.get("source") == "scrcpy"
+                        else app.state.preview_interval
+                    )
+                    await asyncio.sleep(interval)
             except (WebSocketDisconnect, RuntimeError):
                 pass
             finally:
                 app.state.preview_sender = None
         finally:
             app.state.ws_clients -= 1
+            manager.client_disconnected()
 
     app.state.static_dir = _STATIC_DIR
     app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
