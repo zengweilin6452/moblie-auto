@@ -107,11 +107,18 @@ class BackendElement(Protocol):
     @property
     def text(self) -> str: ...
 
+    @property
+    def info(self) -> dict: ...
+
     def click(self) -> None: ...
+
+    def clear_text(self) -> None: ...
+
+    def set_text(self, text: str) -> None: ...
 
 
 class DeviceBackend(Protocol):
-    """执行核心对设备的全部请求面;伪造实现见 tests/unit/conftest.py。"""
+    """执行核心对设备的全部请求面;伪造实现见 tests/unit/fakes.py。"""
 
     def connect(self, serial: str) -> None: ...
 
@@ -124,6 +131,16 @@ class DeviceBackend(Protocol):
     def screenshot_png(self) -> bytes: ...
 
     def app_start(self, package: str, activity: str | None, stop: bool = False) -> None: ...
+
+    def open_deeplink(self, uri: str) -> None: ...
+
+    def press_key(self, name: str) -> None: ...
+
+    def swipe(
+        self, sx: int, sy: int, ex: int, ey: int, duration: float
+    ) -> None: ...
+
+    def dump_ui(self) -> str: ...
 
 
 class U2Backend:
@@ -149,6 +166,9 @@ class U2Backend:
         return int(size[0]), int(size[1])
 
     def find_elements(self, by: Locator, value: str) -> list[BackendElement]:
+        if by is Locator.XPATH:
+            # u2 的 XPath 是独立子系统,不接受 d(xpath=...) 选择器参数。
+            return [_U2Element(el) for el in self._device.xpath(value).all()]
         selector = self._build_selector(by, value)
         return [_U2Element(selector[i]) for i in range(selector.count)]
 
@@ -161,19 +181,53 @@ class U2Backend:
     def app_start(self, package: str, activity: str | None, stop: bool = False) -> None:
         self._device.app_start(package, activity, stop=stop)
 
+    def open_deeplink(self, uri: str) -> None:
+        # 参数化调用:uri 作为独立参数传递,不拼接 shell 字符串(plan 5.3)。
+        self._device.shell(
+            ["am", "start", "-a", "android.intent.action.VIEW", "-d", uri]
+        )
+
+    _PRESS_KEY_ALIASES = {
+        "back": "back",
+        "home": "home",
+        "enter": "enter",
+        "search": "search",
+        "delete": "del",
+        "recent": "recent",
+    }
+
+    def press_key(self, name: str) -> None:
+        self._device.press(self._PRESS_KEY_ALIASES[name])
+
+    def swipe(self, sx: int, sy: int, ex: int, ey: int, duration: float) -> None:
+        self._device.swipe(sx, sy, ex, ey, duration=duration)
+
+    def dump_ui(self) -> str:
+        xml = self._device.dump_hierarchy()
+        return xml if isinstance(xml, str) else ""
+
     def _build_selector(self, by: Locator, value: str):
+        # 值合法性已由 selectors 模块校验;这里只做有限映射。
         if by is Locator.RESOURCE_ID:
             return self._device(resourceId=value)
         if by is Locator.TEXT:
             return self._device(text=value)
+        if by is Locator.ACCESSIBILITY_ID:
+            return self._device(description=value)
+        if by is Locator.U2_SELECTOR:
+            import json
+
+            return self._device(**json.loads(value))
+        if by is Locator.XPATH:
+            return self._device(xpath=value)
         raise ValueError(f"U2Backend 未实现的定位方式:{by}")  # 调用方已先经 selectors 校验
 
 
 class _U2Element:
     """把 u2 UiObject 包装为本包 BackendElement 形状,隔离 u2 API 变化。
 
-    text/bounds 取自 find 时的一次 info 快照,与查询句柄语义一致;
-    click 仍作用于设备上的活节点。
+    text/bounds/info 取自 find 时的一次 info 快照,与查询句柄语义一致;
+    click/set_text 等动作仍作用于设备上的活节点。
     """
 
     def __init__(self, element) -> None:
@@ -201,5 +255,15 @@ class _U2Element:
     def text(self) -> str:
         return self._info.get("text") or ""
 
+    @property
+    def info(self) -> dict:
+        return self._info
+
     def click(self) -> None:
         self._element.click()
+
+    def clear_text(self) -> None:
+        self._element.clear_text()
+
+    def set_text(self, text: str) -> None:
+        self._element.set_text(text)

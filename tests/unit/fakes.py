@@ -1,19 +1,44 @@
 """单元测试共用伪造:设备后端与元素,注入 DeviceSession/MobileAdapter。"""
 
+import json
 
 from mobile_auto import DeviceSession, MobileAdapter, MobileConfig
 
 
 class FakeElement:
-    """满足 BackendElement 形状的伪造节点;记录点击。"""
+    """满足 BackendElement 形状的伪造节点;记录动作。"""
 
-    def __init__(self, bounds, text=""):
+    def __init__(self, bounds, text="", info=None):
         self.bounds = bounds
         self.text = text
+        self.info = dict(info or {})
+        if "text" not in self.info:
+            self.info["text"] = text
         self.click_calls = 0
+        self.text_inputs = []
 
     def click(self) -> None:
         self.click_calls += 1
+
+    def clear_text(self) -> None:
+        self.text_inputs.append("")
+
+    def set_text(self, text: str) -> None:
+        self.text_inputs.append(text)
+
+
+# u2 选择器字段 → info 键的映射(与真机 u2 info 键一致)
+_SELECTOR_KEY_TO_INFO = {
+    "resourceId": "resourceName",
+    "text": "text",
+    "description": "contentDescription",
+    "className": "className",
+    "packageName": "packageName",
+    "clickable": "clickable",
+    "enabled": "enabled",
+    "selected": "selected",
+    "checked": "checked",
+}
 
 
 class FakeBackend:
@@ -25,16 +50,22 @@ class FakeBackend:
         elements=None,
         find_script=None,
         screenshots=None,
+        ui_xml="",
     ):
         self.screen = screen
         self.elements = elements or {}  # (Locator 值, value) -> [FakeElement]
         self.find_script = list(find_script or [])  # 每次查询依次弹出,耗尽后回落 elements
         self.screenshots = list(screenshots or [])
+        self.ui_xml = ui_xml
         self.connect_calls = []
         self.app_starts = []
+        self.deeplinks = []
+        self.press_keys = []
+        self.swipes = []
         self.find_calls = 0
         self.screenshot_calls = 0
         self.closed = False
+        self.element_filter = None  # 可注入自定义匹配器(by, value, element) -> bool
 
     def connect(self, serial: str) -> None:
         self.connect_calls.append(serial)
@@ -49,7 +80,28 @@ class FakeBackend:
         self.find_calls += 1
         if self.find_script:
             return self.find_script.pop(0)
+        if self.element_filter is not None:
+            return [el for el in self._all_elements() if self.element_filter(by, value, el)]
+        if by.value == "u2_selector":
+            # 谓词匹配:按 u2 选择器字段过滤全部元素
+            return [el for el in self._all_elements() if self._matches_selector(value, el)]
         return list(self.elements.get((by.value, value), []))
+
+    def _all_elements(self):
+        seen = []
+        for els in self.elements.values():
+            for el in els:
+                if el not in seen:
+                    seen.append(el)
+        return seen
+
+    @staticmethod
+    def _matches_selector(value, el) -> bool:
+        predicate = json.loads(value)
+        for key, expected in predicate.items():
+            if el.info.get(_SELECTOR_KEY_TO_INFO[key]) != expected:
+                return False
+        return True
 
     def screenshot_png(self) -> bytes:
         self.screenshot_calls += 1
@@ -59,6 +111,18 @@ class FakeBackend:
 
     def app_start(self, package, activity, stop=False):
         self.app_starts.append((package, activity, stop))
+
+    def open_deeplink(self, uri: str) -> None:
+        self.deeplinks.append(uri)
+
+    def press_key(self, name: str) -> None:
+        self.press_keys.append(name)
+
+    def swipe(self, sx, sy, ex, ey, duration):
+        self.swipes.append((sx, sy, ex, ey, duration))
+
+    def dump_ui(self) -> str:
+        return self.ui_xml
 
 
 def make_session(
@@ -89,9 +153,3 @@ def make_adapter(
 
 
 SCREEN = (1080, 2400)
-
-
-def visible_element(text=""):
-    return FakeElement((0, 100, 500, 200), text=text)
-
-

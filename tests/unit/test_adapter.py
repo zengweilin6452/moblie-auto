@@ -206,16 +206,16 @@ async def test_goto_deeplink_follows_whitelist():
     config = MobileConfig(
         device_serial="SERIAL1", app_package="com.demo", allowed_deeplink_schemes=("demoapp",)
     )
-    adapter, _ = make_adapter(config=config)
-    # 白名单为空:任何链接立即报配置错误(plan 5.3)
+    adapter, backend = make_adapter(config=config)
+    # 白名单为空(默认配置):任何链接立即报配置错误(plan 5.3)
     with pytest.raises(ConfigurationError, match="白名单"):
         await adapter.goto("https://example.com")
-    # 在白名单内但启动能力未交付:明确报不支持
-    with pytest.raises(UnsupportedOperation, match="工单"):
-        await adapter.goto("demoapp://page")
     # 白名单外的 scheme:即使配置了其他白名单项也报配置错误
     with pytest.raises(ConfigurationError):
         await adapter.goto("https://example.com")
+    # 白名单内:经参数化调用打开,不拼 shell 字符串
+    await adapter.goto("demoapp://page/main")
+    assert backend.deeplinks == ["demoapp://page/main"]
 
 
 async def test_goto_without_app_package_is_configuration_error():
@@ -226,9 +226,8 @@ async def test_goto_without_app_package_is_configuration_error():
 
 async def test_unsupported_locator_modes_reported_not_silent():
     adapter, _ = make_adapter()
-    for by in (Locator.IMAGE, Locator.XPATH, Locator.U2_SELECTOR):
-        with pytest.raises(UnsupportedOperation):
-            await adapter.click(Target(by, "x"))
+    with pytest.raises(UnsupportedOperation):
+        await adapter.click(Target(Locator.IMAGE, "t.png"))
 
 
 async def test_adapter_close_idempotent_then_rejected():

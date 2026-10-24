@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from .errors import InvalidTarget
 
@@ -74,13 +75,66 @@ class Target:
 class ElementHandle:
     """查询句柄:某次查询结果的引用(GLOSSARY“查询句柄”)。
 
-    携带重校验依据;过期即失效,不自动指向新节点。
-    句柄重用校验随原生定位补全工单(03)交付,当前为查询结果数据。
+    携带重校验依据;过期即失效,不自动指向新节点。重用前重新定位并
+    校验关键属性(className、resourceId、contentDescription;文本易变
+    不参与身份),会话改变或属性不一致报 StaleHandle。
+    owner 为绑定会话,仅用于路由操作,不参与相等比较与展示。
     """
 
     target: Target
     bounds: tuple[int, int, int, int]
     text: str = ""
+    class_name: str = ""
+    resource_id: str = ""
+    content_desc: str = ""
+    owner: Any = field(default=None, compare=False, repr=False)
+
+    @property
+    def identity(self) -> tuple[str, str, str]:
+        return (self.class_name, self.resource_id, self.content_desc)
+
+    async def _submit(self, use_node) -> Any:
+        import asyncio
+
+        from .errors import StaleHandle
+
+        if self.owner is None:
+            raise StaleHandle("句柄未绑定会话,无法执行操作;请通过 adapter.find_elements 获取")
+        from .selectors import revalidate_handle
+
+        def operation(backend):
+            node = revalidate_handle(backend, self)
+            return use_node(node)
+
+        future = self.owner.submit(operation)
+        return await asyncio.wrap_future(future)
+
+    async def click(self) -> None:
+        """句柄直接点击;身份无法确认报 StaleHandle,不重定向。"""
+        await self._submit(lambda node: node.click())
+
+    async def get_text(self) -> str:
+        """句柄直接取文本;节点消失或身份变化报 StaleHandle。"""
+        return await self._submit(lambda node: node.text or "")
+
+    async def input_text(self, text: str) -> None:
+        """句柄直接输入:清空并替换;不可编辑目标明确失败。"""
+        from .selectors import ensure_editable
+
+        def use_node(node) -> None:
+            ensure_editable(getattr(node, "info", {}) or {})
+            node.clear_text()
+            node.set_text(text)
+
+        await self._submit(use_node)
+
+    async def get_attribute(self, name: str) -> str | tuple[int, int, int, int]:
+        from .selectors import attribute_value, validate_attribute_name
+
+        validate_attribute_name(name)
+        return await self._submit(
+            lambda node: attribute_value(getattr(node, "info", {}) or {}, name)
+        )
 
 
 __all__ = ["ElementHandle", "Locator", "Target"]

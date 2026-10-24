@@ -35,9 +35,17 @@
 | 读取文本 | get_text(text="高级设置") | 文本等于 "高级设置" |
 | 枚举与句柄 | find_elements(text="WLAN") | 至少 1 个句柄,携带 bounds |
 | 截图 | screenshot() | 返回 PNG 魔数开头的全新字节 |
+| 五种原生定位(工单 03) | text/u2_selector/xpath/accessibility_id/resource_id(+index) | 各定位均可见或返回句柄;resource_id 多行同 id 无序号报歧义 |
+| 输入(工单 03) | click(desc="搜索") → input_text(android:id/input) | get_text 读回一致,替换而非追加;非输入框拒绝 |
+| 属性(工单 03) | get_attribute(enabled/bounds/contentDescription) | 布尔为 "true"/"false";bounds 为四整数;缺失返回空串 |
+| 滚动(工单 03) | scroll("down", 1200) | 列表底部项(text="桌面")可见 |
+| 句柄过期(工单 03) | 子页取"高级设置"句柄后返回主页再重用 | 报 StaleHandle,不指向新节点 |
+| UI 树(工单 03) | backend.dump_ui() + parse_ui_hierarchy | 归一化树含设置页面节点 |
 
 冷启动保证用例从设置主页顶部开始(设置进程存活时列表会保留滚动位置,
-曾导致 WLAN 不在可见区)。用例结束停留在 WLAN 子页,不修改任何设置项;
+曾导致 WLAN 不在可见区)。搜索流会残留结果文本,需要干净主页的断言
+须在冷启动后、搜索流之前执行(见 test_operations_matrix.py 顺序)。
+用例结束停留在 WLAN 子页,不修改任何设置项;
 如需还原,手动返回桌面即可。首次建立会话时,u2 会向设备推送其自动化
 组件(atx-agent / app-uiautomator),这是显式运行真机用例的一部分,
 doctor 不执行该初始化。

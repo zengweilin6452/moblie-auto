@@ -1,12 +1,21 @@
-"""原生定位选择规则:可见性过滤、index 语义与单目标歧义。"""
+"""原生定位选择规则:可见性过滤、index 语义、歧义与 u2 选择器白名单。"""
 
 import pytest
 from fakes import FakeElement
 
-from mobile_auto import AmbiguousTarget, ElementNotFound, Locator, UnsupportedOperation
+from mobile_auto import (
+    AmbiguousTarget,
+    ElementNotFound,
+    InvalidTarget,
+    Locator,
+    UnsupportedOperation,
+)
 from mobile_auto.contracts import Target
 from mobile_auto.selectors import (
+    NATIVE_LOCATORS,
+    parse_u2_selector,
     resolve_single,
+    scroll_points,
     select_matches,
     validate_locatable,
     visible_only,
@@ -61,5 +70,43 @@ def test_validate_locatable_reports_future_stages():
     validate_locatable(Target(Locator.RESOURCE_ID, "x"), ALLOWED)
     with pytest.raises(UnsupportedOperation, match="图像定位工单"):
         validate_locatable(Target(Locator.IMAGE, "t.png"), ALLOWED)
-    with pytest.raises(UnsupportedOperation, match="工单 03"):
-        validate_locatable(Target(Locator.XPATH, "//node"), ALLOWED)
+
+
+def test_validate_locatable_checks_u2_selector_json_upfront():
+    with pytest.raises(InvalidTarget, match="合法 JSON"):
+        validate_locatable(Target(Locator.U2_SELECTOR, "{bad"), NATIVE_LOCATORS)
+    validate_locatable(
+        Target(Locator.U2_SELECTOR, '{"text": "WLAN"}'), NATIVE_LOCATORS
+    )
+
+
+def test_parse_u2_selector_whitelist():
+    parsed = parse_u2_selector('{"resourceId": "com.demo:id/ok", "clickable": true}')
+    assert parsed == {"resourceId": "com.demo:id/ok", "clickable": True}
+    with pytest.raises(InvalidTarget, match="未知字段"):
+        parse_u2_selector('{"textContains": "测"}')  # 模糊匹配字段不在白名单
+    with pytest.raises(InvalidTarget, match="未知字段"):
+        parse_u2_selector('{"matches": "^W"}')  # 正则字段明确拒绝
+    with pytest.raises(InvalidTarget, match="非空字符串"):
+        parse_u2_selector('{"text": 1}')
+    with pytest.raises(InvalidTarget, match="布尔值"):
+        parse_u2_selector('{"clickable": "true"}')
+    with pytest.raises(InvalidTarget, match="JSON object"):
+        parse_u2_selector('"text=WLAN"')
+    with pytest.raises(InvalidTarget, match="合法 JSON"):
+        parse_u2_selector("")
+
+
+def test_scroll_points_direction_and_clamping():
+    # down = 手指向上:起点在下、终点在上
+    (sx, sy), (ex, ey) = scroll_points(SCREEN, "down", 500)
+    assert (sx, ex) == (540, 540) and sy > ey
+    # up = 手指向下
+    (_, sy2), (_, ey2) = scroll_points(SCREEN, "up", 500)
+    assert sy2 < ey2
+    # amount 超过安全区域时夹限:最大距离为屏高的 80%
+    (_, sy3), (_, ey3) = scroll_points(SCREEN, "down", 10**9)
+    assert 2400 * 0.8 - 1 <= sy3 - ey3 <= 2400 * 0.8 + 1
+    # 左右方向作用于横向
+    (sx4, _), (ex4, _) = scroll_points(SCREEN, "right", 300)
+    assert sx4 > ex4  # 视口右移,手指向左

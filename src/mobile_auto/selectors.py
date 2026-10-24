@@ -1,26 +1,77 @@
-"""原生 Target 解析、可见性过滤与匹配选择(plan 5.2)。
+"""原生 Target 解析、可见性过滤、匹配选择与句柄校验(plan 5.2/6.2)。
 
-规则:RESOURCE_ID/TEXT 精确匹配(由底层选择器保证);可见性为有效非空
-bounds 且与屏幕相交;无 index 判断存在性或枚举全部,单目标操作要求唯一。
+规则:五种原生定位方式的精确匹配由底层选择器保证(u2 选择器在本模块
+做 JSON 白名单校验);可见性为有效非空 bounds 且与屏幕相交;无 index
+判断存在性或枚举全部,单目标操作要求唯一;index 拒绝 bool、负数与
+字符串数字(Target 构造时校验)。
 """
 
 from __future__ import annotations
 
+import json
 from typing import Protocol
 
 from .contracts import ElementHandle, Locator, Target
-from .errors import AmbiguousTarget, ElementNotFound, UnsupportedOperation
+from .errors import (
+    AmbiguousTarget,
+    ElementNotFound,
+    InvalidTarget,
+    StaleHandle,
+    UnsupportedOperation,
+)
 
 _STAGE_LOCATORS: dict[Locator, str] = {
-    Locator.ACCESSIBILITY_ID: "工单 03",
-    Locator.U2_SELECTOR: "工单 03",
-    Locator.XPATH: "工单 03",
     Locator.IMAGE: "图像定位工单",
 }
+
+# 五种原生定位方式;CSS 明确不支持(Locator 枚举中不存在)。
+NATIVE_LOCATORS = frozenset(
+    {
+        Locator.RESOURCE_ID,
+        Locator.TEXT,
+        Locator.ACCESSIBILITY_ID,
+        Locator.U2_SELECTOR,
+        Locator.XPATH,
+    }
+)
+
+# u2 选择器 JSON 白名单(plan 5.2):值类型逐项校验,拒绝代码、正则与未知字段。
+_U2_SELECTOR_STR_FIELDS = (
+    "resourceId",
+    "text",
+    "description",
+    "className",
+    "packageName",
+)
+_U2_SELECTOR_BOOL_FIELDS = ("clickable", "enabled", "selected", "checked")
+
+
+def parse_u2_selector(value: str) -> dict:
+    """解析并校验 u2 选择器 JSON object 字符串,返回可直接交给后端的字典。"""
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise InvalidTarget(f"u2 选择器不是合法 JSON:{exc}") from exc
+    if not isinstance(parsed, dict):
+        raise InvalidTarget("u2 选择器必须是 JSON object,不接受字符串或数组")
+    unknown = sorted(
+        set(parsed) - set(_U2_SELECTOR_STR_FIELDS) - set(_U2_SELECTOR_BOOL_FIELDS)
+    )
+    if unknown:
+        raise InvalidTarget(f"u2 选择器包含未知字段:{', '.join(unknown)}")
+    for key, val in parsed.items():
+        if key in _U2_SELECTOR_STR_FIELDS:
+            if not isinstance(val, str) or not val:
+                raise InvalidTarget(f"u2 选择器字段 {key} 必须是非空字符串")
+        elif not isinstance(val, bool):
+            raise InvalidTarget(f"u2 选择器字段 {key} 必须是布尔值")
+    return parsed
 
 
 def validate_locatable(target: Target, allowed: frozenset[Locator]) -> None:
     """校验定位方式在当前能力范围内;未交付的方式报不支持。"""
+    if target.by is Locator.U2_SELECTOR:
+        parse_u2_selector(target.value)  # 提前失败,避免进入设备调用后才报错
     if target.by not in allowed:
         stage = _STAGE_LOCATORS.get(target.by)
         detail = f"将随{stage}交付" if stage else "不支持"
@@ -75,10 +126,138 @@ def resolve_single(elements: list, target: Target):
     return elements[target.index] if target.index is not None else elements[0]
 
 
-def make_handle(element, target: Target) -> ElementHandle:
-    """把一次匹配固化为查询句柄;重校验依据随工单 03 扩充。"""
+def identity_of(info: dict) -> tuple[str, str, str]:
+    """节点关键属性(className、resourceId、contentDescription),用于句柄重校验。
+
+    文本易变,不参与身份判定(plan 6.2)。
+    """
+    return (
+        info.get("className") or "",
+        info.get("resourceName") or "",
+        info.get("contentDescription") or "",
+    )
+
+
+def make_handle(element, target: Target, owner=None) -> ElementHandle:
+    """把一次匹配固化为查询句柄;重校验依据取自该次快照。"""
+    info = getattr(element, "info", {}) or {}
+    identity = identity_of(info)
+    bounds = element.bounds
+    if bounds is None:  # 不可见节点不会进入句柄;防御性兜底
+        bounds = (0, 0, 0, 0)
     return ElementHandle(
         target=target,
-        bounds=element.bounds,
+        bounds=bounds,
         text=element.text,
+        class_name=identity[0],
+        resource_id=identity[1],
+        content_desc=identity[2],
+        owner=owner,
     )
+
+
+def revalidate_handle(backend, handle: ElementHandle):
+    """句柄重用:重新定位并校验关键属性;身份无法确认报 StaleHandle。
+
+    不重定向到新节点:目标消失、歧义或属性变化都不视为找到同一节点。
+    """
+    target = handle.target
+    validate_locatable(target, NATIVE_LOCATORS)
+    matches = visible_only(
+        backend.find_elements(target.by, target.value),
+        backend.screen_size(),
+    )
+    try:
+        node = resolve_single(matches, target)
+    except (ElementNotFound, AmbiguousTarget) as exc:
+        raise StaleHandle(
+            f"句柄目标 {target.by.value}={target.value!r} 无法再次唯一确认"
+        ) from exc
+    if identity_of(getattr(node, "info", {}) or {}) != handle.identity:
+        raise StaleHandle("句柄关键属性已变化,拒绝指向新节点;请重新查找")
+    return node
+
+
+_BOOL_ATTRIBUTES = ("enabled", "clickable", "selected", "checked")
+_KNOWN_ATTRIBUTES = (
+    "text",
+    "resourceId",
+    "contentDescription",
+    "className",
+    "packageName",
+    "bounds",
+) + _BOOL_ATTRIBUTES
+
+
+def validate_attribute_name(name: str) -> None:
+    if name not in _KNOWN_ATTRIBUTES:
+        raise InvalidTarget(
+            f"未知属性:{name!r};支持:{', '.join(_KNOWN_ATTRIBUTES)}"
+        )
+
+
+def attribute_value(info: dict, name: str) -> str | tuple[int, int, int, int]:
+    """读取节点属性:布尔以 true/false 字符串返回,bounds 为固定四整数,
+    已知但缺失返回空串(plan 5.3)。"""
+    validate_attribute_name(name)
+    if name == "text":
+        return info.get("text") or ""
+    if name == "resourceId":
+        return info.get("resourceName") or ""
+    if name == "contentDescription":
+        return info.get("contentDescription") or ""
+    if name == "className":
+        return info.get("className") or ""
+    if name == "packageName":
+        return info.get("packageName") or ""
+    if name in _BOOL_ATTRIBUTES:
+        return "true" if info.get(name) else "false"
+    bounds = info.get("bounds") or {}
+    try:
+        return (
+            int(bounds["left"]),
+            int(bounds["top"]),
+            int(bounds["right"]),
+            int(bounds["bottom"]),
+        )
+    except (KeyError, TypeError):
+        return ""  # 已知但缺失
+
+
+def ensure_editable(info: dict) -> None:
+    """拒绝不可编辑目标:以 className 判定(u2 info 无 editable 字段)。"""
+    class_name = info.get("className") or ""
+    if "EditText" not in class_name:
+        raise InvalidTarget(
+            f"目标不可编辑(className={class_name or '未知'});"
+            "input_text 仅支持输入框"
+        )
+
+
+_SAFE_MARGIN_RATIO = 0.1
+
+
+def scroll_points(
+    screen: tuple[int, int], direction: str, amount: int
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """滚动方向语义(plan 5.3):direction 为视口沿内容移动方向,
+    down 对应手指向上。amount 为正整数像素,夹限到屏幕安全区域;
+    返回 (起点, 终点) 坐标。"""
+    width, height = screen
+    if direction in ("down", "up"):
+        lo, hi = int(height * _SAFE_MARGIN_RATIO), int(height * (1 - _SAFE_MARGIN_RATIO))
+        distance = max(1, min(int(amount), hi - lo))
+        center = (lo + hi) // 2
+        if direction == "down":  # 手指向上:起点在下、终点在上
+            start, end = center + distance // 2, center - distance // 2
+        else:
+            start, end = center - distance // 2, center + distance // 2
+        return (width // 2, start), (width // 2, end)
+    lo, hi = int(width * _SAFE_MARGIN_RATIO), int(width * (1 - _SAFE_MARGIN_RATIO))
+    distance = max(1, min(int(amount), hi - lo))
+    center = (lo + hi) // 2
+    if direction == "right":  # 视口右移:手指向左
+        start, end = center + distance // 2, center - distance // 2
+    else:
+        start, end = center - distance // 2, center + distance // 2
+    return (start, height // 2), (end, height // 2)

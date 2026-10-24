@@ -10,6 +10,11 @@ device_serial = "749622c9"
 app_package = "com.android.settings"
 app_activity = ".MainSettings"
 
+# 启动就绪目标(wait_for_load 等待它可见;缺配置时 wait_for_load 报错)。
+[launch_ready_target]
+by = "text"
+value = "搜索系统设置项"
+
 # 以下可省略(默认值见 plan 9.1)。
 # wait_timeout = 10.0
 # poll_interval = 0.5
