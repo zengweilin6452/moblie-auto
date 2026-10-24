@@ -24,3 +24,7 @@ tests/device/local.toml
 
 # 运行日志
 .scratch/*.log
+
+# 测试运行产物(证据/资产/锁文件,运行时生成)
+tests/device/artifacts/
+tests/device/assets/
