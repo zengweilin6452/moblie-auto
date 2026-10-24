@@ -180,9 +180,10 @@ class DeviceSession:
     def acquire_lease(self) -> None:
         """READY → LEASED;被占用立即报 DeviceBusy,状态保持 READY。
 
-        状态迁移在锁内先行完成,再向设备锁发起获取:检查与占位原子,
-        并发调用方在锁上即看到 LEASED,不会出现双持有者导致的二次释放。
-        设备锁获取失败则回滚 READY。
+        状态迁移与设备锁获取在同一把会话锁内完成:检查、占位与 OS 锁
+        获取原子,并发调用方在锁上即看到 LEASED,不会出现双持有者导致
+        的二次获取。设备锁为非阻塞获取(失败立即 DeviceBusy),锁内
+        执行不会长时间占住会话锁。
         """
         with self._lock:
             if self._state == SessionState.LEASED:
@@ -191,20 +192,16 @@ class DeviceSession:
                 raise RuntimeError(
                     f"仅 READY 状态可获取租约,当前 {self._state.value}"
                 )
+            self._lease.acquire()  # 非阻塞;失败报 DeviceBusy,状态不变
             self._state = SessionState.LEASED
-        try:
-            self._lease.acquire()
-        except BaseException:
-            with self._lock:
-                self._state = SessionState.READY
-            raise
-        with self._lock:
             self._lease_held = True
 
     def release_lease(self) -> None:
         """LEASED → READY;释放不回滚已发送的操作。
 
-        状态迁移在锁内先行完成,保证双重释放必然在此显式报错,
+        状态迁移与设备锁释放在同一把会话锁内完成:先改状态后放锁的
+        窗口里,重新获取会因同进程已持锁而空转复用旧锁,随后被前一次
+        释放放掉——会话自认持锁而互斥已失。双重释放也在此显式报错,
         而不是落到设备锁层后以竞态方式表现。
         """
         with self._lock:
@@ -212,9 +209,9 @@ class DeviceSession:
                 raise RuntimeError(
                     f"仅 LEASED 状态可释放租约,当前 {self._state.value}"
                 )
+            self._lease.release()
             self._state = SessionState.READY
             self._lease_held = False
-        self._lease.release()
 
     # ── scrcpy 截图通道(P1 工单 03)─────────────────────────
 

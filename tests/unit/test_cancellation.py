@@ -105,6 +105,37 @@ async def test_cancel_between_match_and_send_does_not_click():
     assert element.click_calls == 0  # 取消在发送前生效,未发出点击
 
 
+async def test_handle_click_cancelled_during_revalidation_does_not_click():
+    """句柄操作在重定位期间被取消:取消标记传播 + 发送前检查点,
+    不得再发出点击。"""
+    element = FakeElement((0, 0, 10, 10), info={"className": "android.widget.TextView"})
+    revalidating = threading.Event()
+    release = threading.Event()
+
+    def slow_revalidate(by, value, el):
+        revalidating.set()
+        assert release.wait(2)  # 重定位进行中、动作尚未发送的窗口
+        return True
+
+    backend = FakeBackend(
+        element_filter=slow_revalidate,
+        elements={("text", "x"): [element]},
+        find_script=[[element]],  # 首次查询立即返回,用于建立句柄
+    )
+    adapter, _ = make_adapter(backend=backend, config=SMALL)
+    handles = await adapter.find_elements(Target(Locator.TEXT, "x"))
+    assert len(handles) == 1
+
+    task = asyncio.ensure_future(handles[0].click())
+    assert await asyncio.to_thread(revalidating.wait, 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task  # 等待方取消已在会话登记
+    release.set()
+    await asyncio.sleep(0.1)  # 等线程走到检查点
+    assert element.click_calls == 0  # 取消在发送前生效,未发出点击
+
+
 # ── FAULTED:close 排空超时保持故障与租约 ───────────────────────
 
 
@@ -194,6 +225,53 @@ def test_acquire_lease_busy_keeps_ready_state():
     with pytest.raises(DeviceBusy):
         session.acquire_lease()
     assert session.state is SessionState.READY  # 忙时状态不变
+
+
+def test_release_reacquire_waits_for_actual_unlock(tmp_path):
+    """释放的窗口期重新获取不得复用旧锁:状态迁移与 OS 锁释放必须原子。
+
+    旧实现先改状态后放锁——窗口里重新获取因同进程已持锁而空转成功,
+    随后被前一次释放放掉,会话自认持锁而互斥已失(第三方可取同一锁)。
+    """
+    lease_dir = tmp_path / "leases"
+    inner = DeviceLease("SERIAL1", lease_dir=lease_dir)
+    gate = threading.Event()
+    release_started = threading.Event()
+
+    class GatedLease:
+        def acquire(self):
+            inner.acquire()
+
+        def release(self):
+            release_started.set()
+            assert gate.wait(5)
+            inner.release()
+
+    session, _ = make_session(lease_factory=lambda s: GatedLease())
+    session.start()  # LEASED:inner 持真实文件锁
+
+    releaser = threading.Thread(target=session.release_lease, daemon=True)
+    releaser.start()
+    assert release_started.wait(2)  # 释放已开始并被闸住(状态尚未对外可见)
+
+    acquirer_done = []
+    acquirer = threading.Thread(
+        target=lambda: (session.acquire_lease(), acquirer_done.append(True)),
+        daemon=True,
+    )
+    acquirer.start()
+    acquirer.join(0.2)
+    assert not acquirer_done  # 窗口期获取必须等待,不得复用未释放的旧锁
+
+    gate.set()  # 真实解锁
+    releaser.join(2)
+    acquirer.join(2)
+    assert acquirer_done
+    assert inner.held  # 重新获取持有的是真实文件锁,而非空转复用
+    third = DeviceLease("SERIAL1", lease_dir=lease_dir)
+    with pytest.raises(DeviceBusy):  # 互斥未失:第三方此时取不到同一把锁
+        third.acquire()
+    session.close()
 
 
 # ── session 级 fixture 与 function 级事件循环组合(plan 7.1)───

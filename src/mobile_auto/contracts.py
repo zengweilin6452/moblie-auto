@@ -119,16 +119,24 @@ class ElementHandle:
 
             def operation(backend):
                 node = revalidate_image_handle(backend, self, store)
+                self.owner.send_checkpoint()  # 重校验后、发送前的取消检查点
                 return use_node(node)
 
         else:
 
             def operation(backend):
                 node = revalidate_handle(backend, self)
+                self.owner.send_checkpoint()  # 重校验后、发送前的取消检查点
                 return use_node(node)
 
         future = self.owner.submit(operation)
-        return await asyncio.wrap_future(future)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            # 等待方取消须向会话登记:排队任务撤销;已运行任务到达检查点
+            # 不再发送,结局记 unknown(plan 7.1)
+            self.owner.mark_cancelled(future)
+            raise
 
     async def click(self) -> None:
         """句柄直接点击;身份无法确认报 StaleHandle,不重定向。"""
