@@ -800,7 +800,14 @@ def create_app(
 
 
 class _PreviewSender:
-    """每客户端仅保留最新帧:上一帧未发完则丢弃新帧,不堆积。"""
+    """每客户端仅保留最新帧:上一帧未发完则丢弃新帧,不堆积。
+
+    发送带超时:客户端停止读取时 TCP 背压会让 send 永久挂起,
+    连接既不断开也不再出帧,页面冻结在最后一帧。超时判定失联,
+    抛 RuntimeError 交给预览循环退出,槽位释放、客户端自动重连。
+    """
+
+    _SEND_TIMEOUT_SECONDS = 5.0
 
     def __init__(self, ws: WebSocket) -> None:
         self._ws = ws
@@ -813,7 +820,13 @@ class _PreviewSender:
             return
         self._busy = True
         try:
-            await self._ws.send_json(frame)
+            await asyncio.wait_for(
+                self._ws.send_json(frame), timeout=self._SEND_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"预览客户端 {self._SEND_TIMEOUT_SECONDS:.0f} 秒未取帧,判定失联"
+            ) from exc
         finally:
             self._busy = False
 
