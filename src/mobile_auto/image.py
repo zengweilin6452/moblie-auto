@@ -11,12 +11,20 @@
 - DEFAULT_CONFIDENCE = 0.90:灰度相关性阈值,可被 Target.confidence 覆盖
 - NMS_IOU = 0.30:重叠抑制阈值
 - MAX_PEAKS = 2000 / MAX_MATCHES = 100:候选与结果上限,超限拒绝不静默丢弃
-- COLOR_CONFIDENCE_MIN = 0.90:颜色验证阈值(V2 P3)。候选窗口与模板各
-  裁剪到 [10,245] 后转 HSV,H/S/V 三通道分别计算去均值相关,取最小值
-  达阈值才通过。由固定正负样本组校准(2026-10-24 实测):全部 8 个正
-  样本(含两组 jpeg85 渲染差异)最小值 =1.000;通道对调状态色负样本
-  t-icon-recolor 灰度分 0.997、HSV 最小值 0.230(灰度阶段放行、颜色门
-  拒绝);局部色点状态样本同理(v1 均值差 3.33 会误放行)。
+- 颜色验证为三段门(V2 P3,候选窗口与模板各裁剪到 [10,245] 后转 HSV):
+  H/S 通道去均值相关 ≥ COLOR_CONFIDENCE_MIN=0.85(色相状态判别主通道),
+  V 通道 ≥ COLOR_VALUE_CONFIDENCE_MIN=0.70(抗跨分辨率重采样相位差),
+  RGB 逐像素均值绝对差 ≤ COLOR_MEAN_DIFF_MAX=16(承袭 v1,拦均匀变暗/
+  去饱和的禁用态——灰度 CCOEFF 与去均值相关都对线性偏移不敏感,
+  单独用相关性会放过)。2026-10-24 实测,各负样本由不同门拦截:
+  通道对调(亮度保持)灰度分 0.997 放行、真实样本 t-icon-recolor
+  H=0.230 / 合成样本 H=0.348 拒绝(H/S 门职责);局部色点与大色块
+  状态色(亮度改变)灰度分 0.764 / -0.221,由灰度阈值拒绝;均匀变暗
+  30% 灰度分≈1.0、H/S/V≈1.0,由均值差 39.3 拒绝。正样本下限:8 个
+  真实正样本(含两组 jpeg85)H/S/V=1.000;跨分辨率正样本(81px 彩色
+  图标 1.25×)H=0.933/S=0.985/V=0.776,合成 UI 形态样本 0.85× 时
+  H=0.889(半像素边缘错位的分辨率极限)——H/S 取 0.85、V 取 0.70
+  覆盖正样本下限,与负样本上限 0.348 之间余量 ≥0.5。
   方差近零的通道对显式定义(见 _channel_ncc),不依赖未定义的 0/0。
 - 坐标容差 2 像素:合成样本验收坐标的中心容差
 """
@@ -36,10 +44,19 @@ DEFAULT_CONFIDENCE = 0.90
 NMS_IOU = 0.30
 MAX_PEAKS = 2000
 MAX_MATCHES = 100
-COLOR_CONFIDENCE_MIN = 0.90  # V2 P3:HSV 三通道最小相关性下限
+COLOR_CONFIDENCE_MIN = 0.85  # V2 P3:色相/饱和度通道的最小相关下限
+COLOR_VALUE_CONFIDENCE_MIN = 0.70  # 明度通道的最小相关下限(放宽:抗重采样相位差)
+COLOR_MEAN_DIFF_MAX = 16.0  # RGB 均值绝对差上限(承袭 v1:拦均匀变暗/变灰状态)
 _COLOR_CLIP = (10, 245)  # 转 HSV 前的 RGB 裁剪范围,压低极端值对色相的噪声
 _CHANNEL_FLAT_STD = 1.0  # 通道标准差低于此值视为常量通道(0-255 标度)
 _CHANNEL_FLAT_MEAN_DIFF = 2.0  # 双常量通道的均值差容忍(轻微渲染差异)
+
+# V2 P4a 有界多尺度(采集分辨率≠当前截图时自动启用;初值见 docs/image-v2-plan.md)
+_SCALE_SPAN = 1.3  # 期望比例两侧的搜索倍率
+_SCALE_COARSE_STEP = 0.05  # 粗扫步长
+_SCALE_FINE_STEP = 0.01  # 细扫步长(粗扫最优邻域)
+_SCALE_SEARCH_LONG_EDGE = 800  # 粗细扫在长边不超过此值的降采样图上进行
+_SCALE_TEMPLATE_MIN = 10  # 缩放后模板任一边低于此像素则跳过该尺度
 
 
 @dataclass(frozen=True)
@@ -147,18 +164,26 @@ def match_template(
     *,
     confidence: float | None = None,
     region: tuple[int, int, int, int] | None = None,
+    source_resolution: tuple[int, int] | None = None,
 ) -> list[MatchResult]:
     """在截图(或其搜索区域)内匹配模板,返回全截图坐标的匹配结果。
 
     无匹配返回空列表——这是查询结果,不是错误;非法输入(损坏 PNG、
     透明蒙版、低纹理模板、越界区域、超限溢出)显式拒绝。
+
+    source_resolution 为模板采集时的屏幕分辨率(P4a):与当前截图不一致
+    时自动启用有界多尺度搜索;一致或缺省为单尺度,行为与 v1 相同。
     """
     threshold = (
         DEFAULT_CONFIDENCE if confidence is None else _validate_confidence(confidence)
     )
     screenshot = decode_rgb(screenshot_png, what="截图")
     return _match_prepared(
-        screenshot, prepare_template(template_png), threshold, region
+        screenshot,
+        prepare_template(template_png),
+        threshold,
+        region,
+        source_resolution,
     )
 
 
@@ -168,13 +193,18 @@ def match_prepared(
     *,
     confidence: float | None = None,
     region: tuple[int, int, int, int] | None = None,
+    source_resolution: tuple[int, int] | None = None,
 ) -> list[MatchResult]:
     """match_template 的免重复解码入口:模板已通过 prepare_template 校验。"""
     threshold = (
         DEFAULT_CONFIDENCE if confidence is None else _validate_confidence(confidence)
     )
     return _match_prepared(
-        decode_rgb(screenshot_png, what="截图"), template, threshold, region
+        decode_rgb(screenshot_png, what="截图"),
+        template,
+        threshold,
+        region,
+        source_resolution,
     )
 
 
@@ -183,10 +213,23 @@ def _match_prepared(
     template: PreparedTemplate,
     threshold: float,
     region: tuple[int, int, int, int] | None,
+    source_resolution: tuple[int, int] | None = None,
 ) -> list[MatchResult]:
     rx, ry, rw, rh = _validate_region(region, (screenshot.shape[1], screenshot.shape[0]))
-
     search = screenshot[ry : ry + rh, rx : rx + rw]
+
+    if source_resolution is not None:
+        screen_size = (screenshot.shape[1], screenshot.shape[0])
+        if (int(source_resolution[0]), int(source_resolution[1])) != screen_size:
+            template = _adapt_scale(
+                cv2.cvtColor(search, cv2.COLOR_RGB2GRAY),
+                template,
+                screen_size,
+                source_resolution,
+            )
+            if template is None:
+                return []  # 所有尺度下模板都无法放进搜索区域
+
     th, tw = template.rgb.shape[:2]
     if th > rh or tw > rw:
         raise InvalidTemplate(
@@ -211,7 +254,11 @@ def _match_prepared(
 
     results = []
     for py, px, score in matches:
-        if not _color_matches(search, template.hsv, px, py, tw, th):
+        candidate = search[py : py + th, px : px + tw]
+        candidate_hsv = cv2.cvtColor(
+            np.clip(candidate, *_COLOR_CLIP), cv2.COLOR_RGB2HSV
+        )
+        if not _color_matches(template, candidate, candidate_hsv):
             continue  # 形状相同、状态色不同:判为不匹配(决定 Q3)
         results.append(
             MatchResult(
@@ -274,6 +321,105 @@ def _non_max_suppress(
     return kept
 
 
+def _scales_between(lo: float, hi: float, step: float) -> list[float]:
+    """确定性尺度序列:[lo, hi] 闭区间按 step 均分,避免浮点累加漂移。"""
+    count = int(round((hi - lo) / step))
+    return [round(lo + i * step, 10) for i in range(count + 1)]
+
+
+def _expected_scale(screen_size: tuple[int, int], source: tuple[int, int]) -> float:
+    """期望均匀缩放比例:屏幕面积比的平方根(宽高比不同时取几何折中)。"""
+    return math.sqrt((screen_size[0] * screen_size[1]) / (source[0] * source[1]))
+
+
+def _scan_scales(
+    search_gray: np.ndarray,
+    template_gray: np.ndarray,
+    scales: list[float],
+) -> float | None:
+    """在(降采样的)灰度搜索图上逐尺度匹配,返回最优尺度。
+
+    平坦区域可能产生非有限分数,粗扫阶段按 -1 处理(收尾阶段仍在全
+    分辨率上做严格的有限性校验与阈值判定)。
+    """
+    best_scale = None
+    best_score = -np.inf
+    for scale in scales:
+        tw = round(template_gray.shape[1] * scale)
+        th = round(template_gray.shape[0] * scale)
+        if (
+            min(tw, th) < _SCALE_TEMPLATE_MIN
+            or tw > search_gray.shape[1]
+            or th > search_gray.shape[0]
+        ):
+            continue
+        resized = cv2.resize(
+            template_gray,
+            (tw, th),
+            interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR,
+        )
+        scores = cv2.matchTemplate(search_gray, resized, cv2.TM_CCOEFF_NORMED)
+        scores = np.nan_to_num(scores, nan=-1.0, posinf=-1.0, neginf=-1.0)
+        score = float(scores.max())
+        if score > best_score:
+            best_score, best_scale = score, scale
+    return best_scale
+
+
+def _adapt_scale(
+    search_gray: np.ndarray,
+    template: PreparedTemplate,
+    screen_size: tuple[int, int],
+    source_resolution: tuple[int, int],
+) -> PreparedTemplate | None:
+    """有界多尺度(P4a):粗扫+细扫估计最优尺度,返回按该尺度缩放的新模板。
+
+    粗细扫都在长边 ≤ _SCALE_SEARCH_LONG_EDGE 的降采样搜索图上进行
+    (借鉴 Airtest mstpl 的 src_max 降本):扫描前把全分辨率尺度乘上
+    降采样系数,扫描结果再除回,保持尺度体系一致。无可用尺度(模板
+    缩放后过小或放不进搜索区域)返回 None,语义为无匹配。期望比例
+    s0 下模板大于搜索区域属使用错误,返回原尺寸模板,交给尺寸校验拒绝。
+    """
+    s0 = _expected_scale(screen_size, source_resolution)
+    lo, hi = s0 / _SCALE_SPAN, s0 * _SCALE_SPAN
+    th, tw = template.rgb.shape[:2]
+    search_w, search_h = search_gray.shape[1], search_gray.shape[0]
+    if round(tw * s0) > search_w or round(th * s0) > search_h:
+        return template  # 保持原尺寸,交给尺寸校验报"大于搜索区域"
+
+    downscale = min(1.0, _SCALE_SEARCH_LONG_EDGE / max(search_w, search_h))
+    small = (
+        cv2.resize(search_gray, None, fx=downscale, fy=downscale, interpolation=cv2.INTER_AREA)
+        if downscale < 1.0
+        else search_gray
+    )
+
+    def scan(full_scales: list[float]) -> float | None:
+        small_scales = [round(s * downscale, 10) for s in full_scales]
+        best = _scan_scales(small, template.gray, small_scales)
+        return None if best is None else best / downscale
+
+    coarse = scan(_scales_between(round(lo, 10), round(hi, 10), _SCALE_COARSE_STEP))
+    if coarse is None:
+        return None
+    fine_lo = max(lo, coarse - _SCALE_COARSE_STEP)
+    fine_hi = min(hi, coarse + _SCALE_COARSE_STEP)
+    fine_scales = sorted(
+        set(_scales_between(round(fine_lo, 10), round(fine_hi, 10), _SCALE_FINE_STEP))
+    )
+    best = scan(fine_scales) or coarse
+
+    tw_f, th_f = round(tw * best), round(th * best)
+    if (tw_f, th_f) == (tw, th):
+        return template
+    interp = cv2.INTER_AREA if best < 1 else cv2.INTER_LINEAR
+    return PreparedTemplate(
+        rgb=cv2.resize(template.rgb, (tw_f, th_f), interpolation=interp),
+        gray=cv2.resize(template.gray, (tw_f, th_f), interpolation=interp),
+        hsv=cv2.resize(template.hsv, (tw_f, th_f), interpolation=interp),
+    )
+
+
 def _channel_ncc(a: np.ndarray, b: np.ndarray) -> float:
     """同尺寸单通道的去均值相关(TM_CCOEFF_NORMED 的同尺寸特例)。
 
@@ -298,18 +444,29 @@ def _channel_ncc(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _color_matches(
-    search: np.ndarray, template_hsv: np.ndarray, px: int, py: int, tw: int, th: int
+    template: PreparedTemplate,
+    candidate: np.ndarray,
+    candidate_hsv: np.ndarray,
 ) -> bool:
-    """颜色验证(P3):候选窗口与模板各自裁剪转 HSV,H/S/V 三通道
-    去均值相关取最小值,达 COLOR_CONFIDENCE_MIN 才通过。
+    """颜色验证(P3):三段门,同色轻微渲染差异接受、状态色不同拒绝(Q3)。
 
-    同色轻微渲染差异三通道仍高度相关,接受;形状相同、状态色不同
-    (如通道对调)在色相/饱和度通道上失去相关,拒绝(决定 Q3)。
+    1. H/S 通道去均值相关 ≥ COLOR_CONFIDENCE_MIN:色相/饱和度是状态色
+       判别主通道(通道对调、局部色点都在此失去相关)。
+    2. V 通道去均值相关 ≥ COLOR_VALUE_CONFIDENCE_MIN:明度图样一致性;
+       单独放宽,因跨分辨率重采样的相位差会在细笔画上压低明度相关
+       (实测 81px 彩色图标 1.25× 时 V=0.78 而 H/S≥0.93)。
+    3. RGB 均值绝对差 ≤ COLOR_MEAN_DIFF_MAX:去均值相关对均匀线性偏移
+       不敏感,单独用 NCC 会放过整体变暗/去饱和的禁用态;此门承袭 v1
+       语义补上该缺口(v1 对均匀变暗 30% 实测均值差 ~60 > 16 拒绝)。
     """
-    candidate = search[py : py + th, px : px + tw]
-    candidate_hsv = cv2.cvtColor(
-        np.clip(candidate, *_COLOR_CLIP), cv2.COLOR_RGB2HSV
+    diff = float(
+        np.abs(candidate.astype(np.int16) - template.rgb.astype(np.int16)).mean()
     )
-    return min(
-        _channel_ncc(candidate_hsv[:, :, i], template_hsv[:, :, i]) for i in range(3)
-    ) >= COLOR_CONFIDENCE_MIN
+    if diff > COLOR_MEAN_DIFF_MAX:
+        return False
+    ncc = [
+        _channel_ncc(candidate_hsv[:, :, i], template.hsv[:, :, i]) for i in range(3)
+    ]
+    return min(ncc[0], ncc[1]) >= COLOR_CONFIDENCE_MIN and ncc[2] >= (
+        COLOR_VALUE_CONFIDENCE_MIN
+    )

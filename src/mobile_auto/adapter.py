@@ -133,11 +133,15 @@ class MobileAdapter:
         from .image import match_prepared
 
         template, prepared = self._templates.get(self._store(), target.value)
+        source = (template.meta.get("source_width"), template.meta.get("source_height"))
         results = match_prepared(
             backend.screenshot_png(),
             prepared,
             confidence=target.confidence,
             region=target.region,
+            source_resolution=(
+                source if all(isinstance(v, int) for v in source) else None
+            ),
         )
         return template.meta, results
 

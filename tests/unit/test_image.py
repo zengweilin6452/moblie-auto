@@ -96,8 +96,9 @@ def test_state_color_change_rejected(screenshot_png, template_png):
 
 
 def test_local_color_dot_state_change_rejected():
-    """局部色点状态差异:灰度相关 ~0.99、v1 均值差 3.33(<16)会误放行,
-    HSV 门在色相通道失去相关须拒绝(P3 校准依据之一)。"""
+    """局部色点状态差异:红/绿点亮度差大,灰度相关 0.764 被灰度阈值
+    拒绝(颜色门的均值差 3.33 < 16 本身拦不住;此用例钉住灰度阶段的
+    拦截行为,P3 校准记录)。"""
     patch = rng(3).integers(100, 160, size=(24, 24, 3), dtype=np.uint8)
     patch[6:10, 6:10] = (220, 40, 40)  # 红点
     green = patch.copy()
@@ -106,6 +107,22 @@ def test_local_color_dot_state_change_rejected():
     screen[20 : 44, 20 : 44] = green
     screen[100 : 124, 100 : 124] = patch
     results = match_template(png_bytes(screen), png_bytes(patch))
+    assert [(m.x, m.y) for m in results] == [(100, 100)]
+
+
+def test_uniform_dimming_rejected():
+    """整体变暗 30% 的禁用态:灰度 CCOEFF 对线性偏移不敏感(≈1.0 放行)、
+    H/S/V 相关同样≈1.0,由承袭 v1 的均值差门(diff≈39>16)拒绝(P3)。"""
+    import cv2
+
+    base = cv2.GaussianBlur(
+        rng(11).integers(60, 200, size=(24, 24, 3), dtype=np.uint8), (0, 0), 1.5
+    )
+    dimmed = (base * 0.7).astype(np.uint8)
+    screen = make_background()
+    screen[20 : 44, 20 : 44] = dimmed
+    screen[100 : 124, 100 : 124] = base
+    results = match_template(png_bytes(screen), png_bytes(base))
     assert [(m.x, m.y) for m in results] == [(100, 100)]
 
 
