@@ -106,14 +106,68 @@ def test_capture_sync_returns_snapshot():
     assert "WLAN" in snapshot.tree_json
 
 
-def test_third_ws_client_rejected(client):
+def test_fifth_ws_client_rejected_per_device(client):
+    """WS 每设备上限 4:第 5 个连接被拒。"""
     http, session, _ = client
-    with http.websocket_connect("/api/v1/preview") as first:
-        first.receive_json()
-        with http.websocket_connect("/api/v1/preview") as second:
-            second.receive_json()
-            from starlette.websockets import WebSocketDisconnect
+    from contextlib import ExitStack
 
-            with pytest.raises(WebSocketDisconnect):
-                with http.websocket_connect("/api/v1/preview"):
-                    pass  # 第三个客户端:超上限拒绝
+    from starlette.websockets import WebSocketDisconnect
+
+    with ExitStack() as stack:
+        for _ in range(4):
+            ws = stack.enter_context(http.websocket_connect("/api/v1/preview"))
+            ws.receive_json()
+        with pytest.raises(WebSocketDisconnect):
+            with http.websocket_connect("/api/v1/preview"):
+                pass  # 超出单设备上限:拒绝
+
+
+def test_devices_endpoint_lists_default_device(client):
+    http, _, _ = client
+    res = http.get("/api/v1/devices")
+    assert res.status_code == 200
+    devices = res.json()["devices"]
+    assert devices == [
+        {"serial": "SERIAL1", "state": "device", "session": "ready", "default": True}
+    ]
+
+
+def test_device_param_routes_to_that_devices_session(tmp_path):
+    """?device= 寻址注册表内对应会话;设备间会话与采集互不相干。"""
+    from fastapi.testclient import TestClient
+    from fakes import NullLease
+    from mobile_auto import MobileConfig
+    from mobile_auto.core.session import DeviceSession
+    from mobile_auto.viewer.app import _DeviceRegistry, create_app
+    from mobile_auto.viewer.store import SnapshotStore
+
+    def make(serial):
+        config = MobileConfig(device_serial=serial, assets_dir=tmp_path / "assets")
+        session = DeviceSession(
+            config,
+            backend_factory=lambda: ViewerBackend(),
+            device_enumerator=lambda: {"SERIAL1": "device", "SERIAL2": "device"},
+            lease_factory=lambda s: NullLease(s),
+        )
+        session.start()
+        session.release_lease()
+        return session
+
+    registry = _DeviceRegistry(
+        MobileConfig(device_serial="SERIAL1", assets_dir=tmp_path / "assets"),
+        enumerator=lambda: {"SERIAL1": "device", "SERIAL2": "device"},
+        session_factory=make,
+    )
+    app = create_app(registry=registry)
+    http = TestClient(app)
+    try:
+        body1 = http.post("/api/v1/snapshots?device=SERIAL1", json={}).json()
+        body2 = http.post("/api/v1/snapshots?device=SERIAL2", json={}).json()
+        assert body1["snapshot_id"] and body2["snapshot_id"]
+        devices = http.get("/api/v1/devices").json()["devices"]
+        assert {d["serial"] for d in devices} == {"SERIAL1", "SERIAL2"}
+        # 默认设备(config.device_serial)无须参数
+        body3 = http.post("/api/v1/snapshots", json={}).json()
+        assert body3["snapshot_id"]
+    finally:
+        registry.shutdown()

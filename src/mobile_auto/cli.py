@@ -200,23 +200,18 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    """启动本机网页服务:仅监听 127.0.0.1;无设备时降级启动、状态如实报告。"""
+    """启动本机网页服务:仅监听 127.0.0.1;多设备经 ?device= 寻址、懒连接。"""
     import uvicorn
 
-    from .viewer.app import create_app
+    from .viewer.app import _DeviceRegistry, create_app
 
     try:
         config = load_config(args.config)
     except ConfigurationError as exc:
         print(f"配置错误:{exc}", file=sys.stderr)
         return EXIT_CONFIG
-    session = DeviceSession(config)
-    try:
-        session.start()
-        session.release_lease()  # 网页空闲时回到 READY;采集经短事务获取租约
-    except MobileAutoError as exc:
-        print(f"[serve] 设备未就绪,服务降级启动:{exc}", file=sys.stderr)
-    app = create_app(session)
+    registry = _DeviceRegistry(config)  # 会话在首次被寻址时才连接设备
+    app = create_app(registry=registry)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
     return EXIT_OK
 

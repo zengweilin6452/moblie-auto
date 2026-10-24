@@ -85,8 +85,8 @@ def test_stream_falls_back_to_u2_when_channel_factory_fails():
         assert frame["fallback_reason"]
 
 
-def test_stream_busy_status_when_probe_fails():
-    """通道已启动但租约被持有:探测失败 → busy 状态帧,不发画面。"""
+def test_stream_frames_continue_while_lease_held():
+    """通道健康 + 租约被测试持有:scrcpy 读取不占租约,画面帧照常下发。"""
     session, _ = make_viewer_session(ViewerBackend())
     channel = FakeChannel("SERIAL1")
     manager = _ChannelManager(
@@ -100,16 +100,15 @@ def test_stream_busy_status_when_probe_fails():
     )
     from fastapi.testclient import TestClient
 
-    session.acquire_lease()  # 他人持有租约
+    session.acquire_lease()  # 他人持有租约(如 pytest 运行中)
     try:
         with TestClient(app).websocket_connect("/api/v1/preview") as ws:
             frame = ws.receive_json()
     finally:
         session.release_lease()
     manager.shutdown()
-    assert frame["kind"] == "status"
-    assert frame["busy"] is True
-    assert "画面已暂停" in frame["message"]
+    assert frame["kind"] == "frame"
+    assert frame["source"] == "scrcpy"
 
 
 def test_channel_recycled_after_stream_error_then_recovers():

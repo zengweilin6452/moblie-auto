@@ -1,14 +1,17 @@
-"""网页服务:实时查看、快照与来源/资源限制(plan 8.1–8.3)。
+"""网页服务:多设备查看、实时预览、快照与来源/资源限制。
 
-仅监听回环;Host/Origin 校验拒绝跨源;WS 最多 2 客户端、每客户端
-仅保留最新帧(慢客户端丢帧不堆积);pytest 持有租约时不主动采集、
-状态如实显示;错误统一 code/message/request_id 信封。
+仅监听回环;Host/Origin 校验拒绝跨源。设备经 ?device= 参数寻址,
+会话按 serial 懒创建并各自持有租约与串行队列;WS 每设备最多
+4 客户端、每客户端仅保留最新帧(慢客户端丢帧不堆积)。预览读取
+(scrcpy 最新帧)不占租约——测试运行中画面不中断;截图回退与写操作
+(注入/采集)仍经租约门控;错误统一 code/message/request_id 信封。
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import threading
 import time
 import uuid
@@ -26,6 +29,7 @@ from ..core.selectors import (
     validate_locatable,
     visible_only,
 )
+from ..core.backend import enumerate_device_states
 from ..core.session import DeviceSession, SessionState
 from ..core.ui_tree import flatten, parse_ui_hierarchy
 from ..errors import (
@@ -48,11 +52,10 @@ from .store import Snapshot, SnapshotStore
 
 _PREVIEW_INTERVAL_SECONDS = 1.0  # u2 截图回退档帧间隔
 _STREAM_INTERVAL_SECONDS = 0.1  # 视频流档帧间隔(目标 ~10fps)
-_MAX_WS_CLIENTS = 2
+_MAX_WS_CLIENTS_PER_DEVICE = 4  # 同一设备的预览连接上限(按设备计数)
 _CHANNEL_IDLE_STOP_SECONDS = 30.0  # 无客户端后 server 自停
 _CHANNEL_RETRY_BACKOFF_INIT = 2.0
 _CHANNEL_RETRY_BACKOFF_MAX = 30.0
-_LEASE_PROBE_MIN_INTERVAL = 1.0  # 租约探测节流:降低与 pytest 抢锁的碰撞面
 
 _CAPTURE_TIMEOUT_SECONDS = 10.0
 _TREE_INTERVAL_LIMIT_SECONDS = 1.0  # 截图与树采集间隔超限判定(快照不一致)
@@ -116,13 +119,17 @@ class _ChannelManager:
         self._next_retry = 0.0
         self._backoff = retry_init
         self._last_error: str | None = None
-        self._lease_probe_at = 0.0
-        self._lease_probe_ok = False
 
     @property
     def last_error(self) -> str | None:
         with self._lock:
             return self._last_error
+
+    @property
+    def clients(self) -> int:
+        """当前预览客户端数;用于每设备连接上限判定。"""
+        with self._lock:
+            return self._clients
 
     def client_connected(self) -> None:
         with self._lock:
@@ -155,29 +162,6 @@ class _ChannelManager:
             self._last_error = reason
             self._next_retry = time.monotonic() + self._backoff
             self._backoff = min(self._backoff * 2, self._retry_max)
-
-    def lease_available(self) -> bool:
-        """租约是否空闲(节流探测,≤1Hz);探测即短暂 acquire→release。"""
-        with self._lock:
-            now = time.monotonic()
-            if now - self._lease_probe_at < _LEASE_PROBE_MIN_INTERVAL:
-                return self._lease_probe_ok
-            self._lease_probe_at = now
-        state = self._session.state
-        if state not in (SessionState.READY, SessionState.LEASED):
-            with self._lock:
-                self._lease_probe_ok = False
-            return False
-        try:
-            self._session.acquire_lease()
-        except MobileAutoError:
-            with self._lock:
-                self._lease_probe_ok = False
-            return False
-        self._session.release_lease()
-        with self._lock:
-            self._lease_probe_ok = True
-        return True
 
     def channel(self) -> ScrcpyChannel | None:
         """可用通道;未启动/待重试则按退避懒启动(经租约)。"""
@@ -236,30 +220,152 @@ class _ChannelManager:
                 self._channel = None
 
 
+class _DeviceEntry:
+    """注册表条目:一台设备的会话与通道管理器;会话可选(未连接)。"""
+
+    __slots__ = ("session", "manager")
+
+    def __init__(self, session: DeviceSession | None, manager: _ChannelManager | None) -> None:
+        self.session = session
+        self.manager = manager
+
+
+class _DeviceRegistry:
+    """serial → 会话/通道管理器的懒创建注册表。
+
+    设备列表来自 adb 枚举与已建会话的并集;会话在首次被路由寻址时
+    创建并连接(失败如实报错且不缓存,下次寻址重试)。默认设备为
+    config.device_serial;每台设备独立持有串行队列与租约文件,互不阻塞。
+    """
+
+    def __init__(
+        self,
+        config,
+        *,
+        enumerator=None,
+        session_factory=None,
+        manager_factory=None,
+    ) -> None:
+        self._config = config
+        self._enumerator = enumerator or enumerate_device_states
+        self._session_factory = session_factory or self._default_session_factory
+        self._manager_factory = manager_factory or _ChannelManager
+        self._lock = threading.Lock()
+        self._entries: dict[str, _DeviceEntry] = {}
+
+    @classmethod
+    def single(cls, session: DeviceSession, manager: _ChannelManager | None = None) -> "_DeviceRegistry":
+        """单设备兼容视图:预置已启动会话(测试与旧调用方),不触碰 adb 枚举。"""
+        registry = cls.__new__(cls)
+        registry._config = session.config
+        registry._enumerator = lambda: {session.serial: "device"} if session.serial else {}
+        registry._session_factory = None  # 预置会话,不再创建
+        registry._manager_factory = _ChannelManager
+        registry._lock = threading.Lock()
+        registry._entries = {}
+        if session.serial:
+            registry._entries[session.serial] = _DeviceEntry(session, manager)
+        return registry
+
+    def _default_session_factory(self, serial: str) -> DeviceSession:
+        session = DeviceSession(dataclasses.replace(self._config, device_serial=serial))
+        session.start()  # 连接失败 → DeviceUnavailable,由调用方如实报错
+        session.release_lease()  # 网页空闲态 READY
+        return session
+
+    def default_serial(self) -> str | None:
+        configured = self._config.device_serial
+        if configured:
+            return configured
+        states = self._adb_states()
+        authorized = sorted(s for s, v in states.items() if v == "device")
+        return authorized[0] if len(authorized) == 1 else None
+
+    def _adb_states(self) -> dict[str, str]:
+        try:
+            return dict(self._enumerator())
+        except MobileAutoError:
+            return {}
+
+    def devices(self) -> list[dict]:
+        """adb 可见设备 ∪ 已建会话;不创建会话、无副作用。"""
+        states = self._adb_states()
+        with self._lock:
+            entries = dict(self._entries)
+        default = self.default_serial()
+        serials = sorted(set(states) | set(entries))
+        return [
+            {
+                "serial": serial,
+                "state": states.get(serial) or ("connected" if serial in entries else "unknown"),
+                "session": entries[serial].session.state.value
+                if entries[serial].session is not None
+                else None,
+                "default": serial == default,
+            }
+            for serial in serials
+        ]
+
+    def entry(self, serial: str, *, create: bool = False) -> _DeviceEntry | None:
+        """已存在的条目;create 时懒建会话(连接设备)后返回。"""
+        with self._lock:
+            entry = self._entries.get(serial)
+        if entry is not None and entry.session is not None:
+            return entry
+        if not create:
+            return entry
+        if self._session_factory is None:  # 单设备视图:无工厂即不可新建
+            return entry
+        session = self._session_factory(serial)  # 失败不缓存:下次寻址重试
+        with self._lock:
+            entry = self._entries.get(serial)
+            if entry is not None and entry.session is not None:
+                # 并发建会话:保留先建成的,丢弃本次(由 GC 关闭冗余会话)
+                session.close()
+                return entry
+            manager = entry.manager if entry is not None else None
+            entry = _DeviceEntry(session, manager or self._manager_factory(session))
+            self._entries[serial] = entry
+        return entry
+
+    def resolve(
+        self, device_param: str | None
+    ) -> tuple[str, DeviceSession, _ChannelManager]:
+        """路由寻址:None → 默认设备;未建会话则连接。失败抛 MobileAutoError。"""
+        serial = device_param or self.default_serial()
+        if not serial:
+            raise DeviceUnavailable("未指定设备且无法确定默认设备;请用 ?device= 指定")
+        entry = self.entry(serial, create=True)
+        if entry is None or entry.session is None:
+            raise DeviceUnavailable(f"设备 {serial} 会话不可用")
+        return serial, entry.session, entry.manager or _ChannelManager(entry.session)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            entries = list(self._entries.values())
+            self._entries.clear()
+        for entry in entries:
+            if entry.manager is not None:
+                entry.manager.shutdown()
+            if entry.session is not None:
+                entry.session.close()
+
+
 def _build_stream_frame(
     manager: _ChannelManager, session: DeviceSession, store: SnapshotStore
 ) -> dict:
-    """预览帧构建:视频流优先,租约被占/通道不可用回退 u2 截图(工单 02)。
+    """预览帧构建:scrcpy 最新帧优先,读取不占租约(测试运行中画面不中断)。
 
-    会话故障或租约被他人持有时发状态帧,不显示旧画面冒充实时。
+    通道启动仍经租约短事务;通道不可用时回退 u2 截图轮询(该路径需要
+    租约,被测试持有时发状态帧,前端以状态行呈现、不遮画面)。
     """
-    now = datetime.now(UTC).isoformat(timespec="milliseconds")
     if session.state not in (SessionState.READY, SessionState.LEASED):
-        busy = session.state == SessionState.LEASED
         return {
             "kind": "status",
-            "captured_at": now,
+            "captured_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
             "device_state": session.state.value,
-            "busy": busy,
-            "message": "设备忙,暂停采集" if busy else "设备未就绪",
-        }
-    if not manager.lease_available():
-        return {
-            "kind": "status",
-            "captured_at": now,
-            "device_state": session.state.value,
-            "busy": True,
-            "message": "设备被其他进程占用(如测试运行中),画面已暂停",
+            "busy": False,
+            "message": "设备会话未就绪,画面暂停;重连后自动恢复",
         }
     channel = manager.channel()
     if channel is not None:
@@ -292,26 +398,37 @@ def _build_stream_frame(
 
 
 def create_app(
-    session: DeviceSession,
+    session: DeviceSession | None = None,
     store: SnapshotStore | None = None,
     *,
     preview_interval: float = _PREVIEW_INTERVAL_SECONDS,
     stream_interval: float = _STREAM_INTERVAL_SECONDS,
     channel_manager: _ChannelManager | None = None,
+    registry: _DeviceRegistry | None = None,
 ) -> FastAPI:
-    """构建网页应用;会话由调用方注入(lifespan 不拥有启动/关闭)。"""
+    """构建网页应用;会话/注册表由调用方注入(lifespan 不拥有启动/关闭)。
+
+    传 session 时构建仅含该设备的兼容注册表(测试与单设备旧调用方);
+    多设备 serve 传 registry。channel_manager 仅在单设备模式下生效。
+    """
     store = store or SnapshotStore()
     app = FastAPI(title="mobile-auto viewer", lifespan=None)
     app.state.ws_clients = 0
     app.state.store = store
-    app.state.session = session
+    app.state.registry = registry or _DeviceRegistry.single(
+        session, manager=channel_manager
+    )
     app.state.preview_interval = preview_interval
     app.state.stream_interval = stream_interval
-    app.state.channel_manager = channel_manager or _ChannelManager(session)
-    manager = app.state.channel_manager
     # 直接控制(P1 工单 04):显式启用,默认关闭
     app.state.control_enabled = False
     app.state.last_inject = 0.0
+
+    def _resolve(device_param: str | None):
+        return app.state.registry.resolve(device_param)
+
+    def _resolve_request(request: Request):
+        return _resolve(request.query_params.get("device"))
 
     @app.middleware("http")
     async def request_id_and_origin(request: Request, call_next):
@@ -331,22 +448,34 @@ def create_app(
         status = _ERROR_STATUS.get(type(exc), 400)
         return error_envelope(request, status, type(exc).__name__, str(exc))
 
-    # ── 状态 ──────────────────────────────────────────────────
+    # ── 状态与设备 ────────────────────────────────────────────
+
+    @app.get("/api/v1/devices")
+    async def devices(request: Request):
+        """adb 可见设备与已建会话的并集;不创建会话、无副作用。"""
+        return {
+            "devices": app.state.registry.devices(),
+            "request_id": request.state.request_id,
+        }
 
     @app.get("/api/v1/status")
-    async def status(request: Request):
-        session: DeviceSession = app.state.session
+    async def status(request: Request, device: str | None = None):
+        registry: _DeviceRegistry = app.state.registry
+        serial = device or registry.default_serial()
+        entry = registry.entry(serial) if serial else None  # 不触发连接
+        session = entry.session if entry is not None else None
         return {
             "service_version": __version__,
             "request_id": request.state.request_id,
             "device": {
-                "serial": session.serial,
-                "state": session.state.value,
-                "lease_held": session.state == SessionState.LEASED,
-                "busy": session.state == SessionState.LEASED,
+                "serial": serial,
+                "state": session.state.value if session is not None else "disconnected",
+                "lease_held": session is not None and session.state == SessionState.LEASED,
+                "busy": session is not None and session.state == SessionState.LEASED,
             },
+            "devices": registry.devices(),
             "capture": {
-                "can_capture": session.state == SessionState.READY,
+                "can_capture": session is not None and session.state == SessionState.READY,
                 "snapshots": len(store.snapshot_ids()),
             },
         }
@@ -354,9 +483,10 @@ def create_app(
     # ── 快照 ──────────────────────────────────────────────────
 
     @app.post("/api/v1/snapshots")
-    async def create_snapshot(request: Request):
+    async def create_snapshot(request: Request, device: str | None = None):
         body = await request.json() if await request.body() else {}
         with_tree = bool(body.get("with_tree", False))
+        _, session, _ = _resolve(device)
         snapshot = await asyncio.to_thread(capture_snapshot_sync, session, with_tree)
         store.add(snapshot)
         return {
@@ -416,7 +546,7 @@ def create_app(
     # ── 图像模板制作闭环(plan 8.2;工单 11)─────────────────
 
     @app.post("/api/v1/templates")
-    async def create_template(request: Request):
+    async def create_template(request: Request, device: str | None = None):
         """从服务端保留的快照裁剪原始像素生成模板;不接受浏览器图片。"""
         body = await request.json()
         snapshot = store.get(body.get("snapshot_id", ""))
@@ -432,6 +562,7 @@ def create_app(
         logical = str(body.get("logical") or "").strip()
         if not logical:
             return error_envelope(request, 422, "invalid-input", "模板名不能为空")
+        _, session, _ = _resolve(device)
         try:
             loaded = await asyncio.to_thread(
                 _crop_and_register, session, snapshot, logical, region, body, None
@@ -442,13 +573,14 @@ def create_app(
         return _template_payload(loaded)
 
     @app.put("/api/v1/templates/{logical:path}")
-    async def update_template(logical: str, request: Request):
+    async def update_template(logical: str, request: Request, device: str | None = None):
         """确认更新:期望旧摘要与新裁剪参数;摘要不符返回冲突(409)。"""
         body = await request.json()
         snapshot = store.get(body.get("snapshot_id", ""))
         if snapshot is None:
             return error_envelope(request, 404, "not-found", "快照不存在或已过期")
         expected = str(body.get("expected_old_sha256") or "")
+        _, session, _ = _resolve(device)
         try:
             loaded = await asyncio.to_thread(
                 _crop_and_register, session, snapshot, logical, body.get("region"), body, expected
@@ -459,9 +591,10 @@ def create_app(
         return _template_payload(loaded)
 
     @app.get("/api/v1/templates")
-    async def list_templates(request: Request):
+    async def list_templates(request: Request, device: str | None = None):
         from ..imaging.store import TemplateStore
 
+        _, session, _ = _resolve(device)
         entries = [
             {
                 "logical": logical,
@@ -475,9 +608,10 @@ def create_app(
         return {"templates": entries}
 
     @app.get("/api/v1/templates/{logical:path}/image")
-    async def template_image(logical: str, request: Request):
+    async def template_image(logical: str, request: Request, device: str | None = None):
         from ..imaging.store import TemplateStore
 
+        _, session, _ = _resolve(device)
         try:
             loaded = TemplateStore(session.config.assets_dir).load(logical)
         except MobileAutoError as exc:
@@ -489,7 +623,7 @@ def create_app(
         )
 
     @app.post("/api/v1/templates/validate")
-    async def validate_template(request: Request):
+    async def validate_template(request: Request, device: str | None = None):
         """IMAGE 定位验证:重新采集匹配,回传数量、分数与边界框。"""
         body = await request.json()
         target_body = body.get("target") or {}
@@ -508,6 +642,7 @@ def create_app(
                 )
         except MobileAutoError as exc:
             return error_envelope(request, 422, "invalid-target", str(exc))
+        _, session, _ = _resolve(device)
         try:
             snapshot, matches, scores = await asyncio.to_thread(
                 capture_and_query_sync, session, store, target, True
@@ -575,7 +710,7 @@ def create_app(
         }
 
     @app.post("/api/v1/locators/validate")
-    async def validate_locator(request: Request):
+    async def validate_locator(request: Request, device: str | None = None):
         body = await request.json()
         target_body = body.get("target") or {}
         try:
@@ -589,6 +724,7 @@ def create_app(
             )
         except MobileAutoError as exc:
             return error_envelope(request, 422, "invalid-target", str(exc))
+        _, session, _ = _resolve(device)
         try:
             snapshot, matches = await asyncio.to_thread(
                 capture_and_query_sync, session, store, target
@@ -620,16 +756,26 @@ def create_app(
         if origin is not None and not _origin_allowed(origin):
             await ws.close(code=4403)
             return
-        if app.state.ws_clients >= _MAX_WS_CLIENTS:
-            await ws.close(code=4429)
+        try:
+            _, session, manager = _resolve(ws.query_params.get("device"))
+        except MobileAutoError as exc:
+            await ws.accept()
+            await ws.send_json({
+                "kind": "status",
+                "captured_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "busy": False,
+                "message": f"设备不可用:{exc}",
+            })
+            await ws.close(code=4404)
             return
         app.state.ws_clients += 1
-        manager: _ChannelManager = app.state.channel_manager
-        manager.client_connected()
         try:
+            if manager.clients >= _MAX_WS_CLIENTS_PER_DEVICE:
+                await ws.close(code=4429)
+                return
+            manager.client_connected()
             await ws.accept()
             sender = _PreviewSender(ws)
-            app.state.preview_sender = sender
             try:
                 while True:
                     frame = await asyncio.to_thread(
@@ -645,8 +791,6 @@ def create_app(
                     await asyncio.sleep(interval)
             except (WebSocketDisconnect, RuntimeError):
                 pass
-            finally:
-                app.state.preview_sender = None
         finally:
             app.state.ws_clients -= 1
             manager.client_disconnected()
@@ -685,11 +829,12 @@ def create_app(
             values.append(min(max(float(value), 0.0), 1.0))
         return values
 
-    def _inject(operation):
+    def _inject(session: DeviceSession, manager: _ChannelManager, operation):
         """短事务注入:租约(409 门控)→ 队列串行执行 → 释放。
 
-        视频通道经管理器获取(懒启动遵循同一租约门控);注入不成功不
-        释放租约的窗口极小且不回滚,失败时如实报错。
+        会话与通道管理器按请求解析的目标设备传入;视频通道懒启动遵循
+        同一租约门控;注入不成功不释放租约的窗口极小且不回滚,失败
+        时如实报错。
         """
         session.acquire_lease()  # LEASED(pytest 持有)→ DeviceBusy → 409
         try:
@@ -706,7 +851,7 @@ def create_app(
             session.release_lease()
 
     @app.post("/api/v1/input/touch")
-    async def input_touch(request: Request):
+    async def input_touch(request: Request, device: str | None = None):
         body = await request.json()
         gate = _gate_control(request)
         if gate is not None:
@@ -715,9 +860,12 @@ def create_app(
         if values is None:
             return error_envelope(request, 422, "invalid-input", "nx/ny 必须是数值")
         nx, ny = values
+        _, session, manager = _resolve(device)
         try:
             await asyncio.to_thread(
                 _inject,
+                session,
+                manager,
                 lambda channel: channel.tap(
                     *(
                         lambda size: (
@@ -733,7 +881,7 @@ def create_app(
         return {"ok": True, "request_id": request.state.request_id}
 
     @app.post("/api/v1/input/swipe")
-    async def input_swipe(request: Request):
+    async def input_swipe(request: Request, device: str | None = None):
         body = await request.json()
         gate = _gate_control(request)
         if gate is not None:
@@ -748,9 +896,12 @@ def create_app(
         if isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float)):
             return error_envelope(request, 422, "invalid-input", "duration_ms 必须是数值")
         duration_s = min(max(float(duration_ms) / 1000, 0.05), 5.0)
+        _, session, manager = _resolve(device)
         try:
             await asyncio.to_thread(
                 _inject,
+                session,
+                manager,
                 lambda channel: channel.swipe(
                     *(
                         lambda size: (
@@ -769,26 +920,32 @@ def create_app(
         return {"ok": True, "request_id": request.state.request_id}
 
     @app.post("/api/v1/input/key")
-    async def input_key(request: Request):
-        body = await request.json()
+    async def input_key(request: Request, device: str | None = None):
+        body = await request.json() if await request.body() else {}
         gate = _gate_control(request)
         if gate is not None:
             return gate
         name = str(body.get("name") or "")
+        _, session, manager = _resolve(device)
         try:
-            await asyncio.to_thread(_inject, lambda channel: channel.press_key(name))
+            await asyncio.to_thread(
+                _inject, session, manager, lambda channel: channel.press_key(name)
+            )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)
             return error_envelope(request, status, type(exc).__name__, str(exc))
         return {"ok": True, "request_id": request.state.request_id}
 
     @app.post("/api/v1/input/wake")
-    async def input_wake(request: Request):
+    async def input_wake(request: Request, device: str | None = None):
         gate = _gate_control(request)
         if gate is not None:
             return gate
+        _, session, manager = _resolve(device)
         try:
-            await asyncio.to_thread(_inject, lambda channel: channel.wake())
+            await asyncio.to_thread(
+                _inject, session, manager, lambda channel: channel.wake()
+            )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)
             return error_envelope(request, status, type(exc).__name__, str(exc))
@@ -832,7 +989,7 @@ class _PreviewSender:
 
 
 def _build_preview_frame(session: DeviceSession, store: SnapshotStore) -> dict:
-    """预览帧:仅观察;pytest 持有租约(LEASED)时不主动采集。"""
+    """u2 回退帧:仅观察;pytest 持有租约(LEASED)时不主动采集。"""
     now = datetime.now(UTC).isoformat(timespec="milliseconds")
     if session.state != SessionState.READY:
         busy = session.state == SessionState.LEASED
@@ -842,7 +999,9 @@ def _build_preview_frame(session: DeviceSession, store: SnapshotStore) -> dict:
             "device_state": session.state.value,
             "busy": busy,
             "message": (
-                "设备忙(其他进程持租约),暂停采集" if busy else "设备未就绪"
+                "视频流不可用且设备忙(测试运行中);测试结束后自动恢复截图轮询"
+                if busy
+                else "设备未就绪,画面暂停;恢复后自动继续"
             ),
         }
     try:
