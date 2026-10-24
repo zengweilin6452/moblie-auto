@@ -52,18 +52,9 @@ function populateDevices(devices) {
 
 async function switchDevice(serial) {
   state.device = serial;
-  state.snapshotId = null;
-  state.treeNodes = [];
-  state.treeCapturedAt = null;
-  state.pickedLocator = null;
-  state.deviceSpace = null;
-  $("tree").textContent = "";
-  $("tree-time").textContent = "";
-  $("tree-meta").textContent = "「采集检查」后显示;点击树节点联动选中。";
-  renderCandidates([]);
-  fillAttrTable(null);
   closePreviewSocket();
-  setView("live");
+  setView("live"); // 含 clearInspectInfo:清空旧设备的检查产物
+  state.deviceSpace = null;
   refreshStatus();
 }
 
@@ -79,10 +70,32 @@ function setView(view) {
   if (view === "live") {
     clearOverlay();
     state.snapshotId = null;
+    clearInspectInfo();
   }
 }
 
+/* 回到实时(或切换设备)时,清空附着在冻结快照上的检查产物:
+   控件页的属性表/候选/表达式,图像页的框选区域,以及树面板。
+   已注册的模板(logical/sha256/表达式)不属于快照,保留不清。 */
+function clearInspectInfo() {
+  state.treeNodes = [];
+  state.treeCapturedAt = null;
+  state.pickedLocator = null;
+  state.hoverNodeIndex = null;
+  $("tree").textContent = "";
+  $("tree-time").textContent = "";
+  $("tree-meta").textContent = "「采集检查」后显示;点击树节点联动选中。";
+  fillAttrTable(null);
+  renderCandidates([]);
+  $("pick-point").textContent = "";
+  imageState.region = null;
+  renderRegionTable(null);
+  $("image-hint").textContent = "先「采集检查」冻结画面,再在画面上按住拖动框选目标。";
+  $("btn-tpl-save").disabled = true;
+}
+
 async function inspectCapture() {
+  clearInspectInfo(); // 新快照:清掉上一次冻结检查的属性/候选/框选
   const res = await fetch(`/api/v1/snapshots${qs()}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
