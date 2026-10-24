@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "logical": "demo/wlan-target.png",
+  "image_sha256": "3f87c03908c0c38b52016dc0c72a28d9a4c112ecc18a14411d5dac71f73f9fbf",
+  "width": 321,
+  "height": 93,
+  "source_width": 1080,
+  "source_height": 2400,
+  "orientation": "portrait",
+  "app_package": "com.android.settings",
+  "capture_time": "2026-10-24T06:56:47.429+00:00",
+  "note": ""
+}

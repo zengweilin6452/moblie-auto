@@ -1,86 +1,9 @@
 """网页 HTTP/WS API 外部行为:注入伪造后端会话,TestClient 驱动。"""
 
-import cv2
-import numpy as np
 import pytest
-from fastapi.testclient import TestClient
+from conftest import ViewerBackend, make_viewer_session
 
-from mobile_auto.viewer.app import capture_snapshot_sync, create_app
-from mobile_auto.viewer.store import SnapshotStore
-
-SCREEN = (150, 200)
-
-
-def real_png(seed=3, w=150, h=200) -> bytes:
-    arr = np.random.default_rng(seed).integers(0, 255, size=(h, w, 3), dtype=np.uint8)
-    ok, buf = cv2.imencode(".png", arr[:, :, ::-1])
-    assert ok
-    return buf.tobytes()
-
-
-TREE_XML = """<?xml version='1.0'?><hierarchy>
-<node class="android.widget.FrameLayout" text="" resource-id="" bounds="[0,0][150,200]">
-<node class="android.widget.TextView" text="WLAN" resource-id="android:id/title"
- bounds="[10,20][80,40]" clickable="true"/></node></hierarchy>"""
-
-
-class ViewerBackend:
-    """查看器测试后端:真实 PNG 截图 + 固定 UI 树。"""
-
-    def __init__(self):
-        self.png = real_png()
-        self.capture_calls = 0
-
-    def connect(self, serial):
-        pass
-
-    def close(self):
-        pass
-
-    def screen_size(self):
-        return SCREEN
-
-    def find_elements(self, by, value):
-        return []
-
-    def screenshot_png(self):
-        self.capture_calls += 1
-        return self.png
-
-    def tap(self, x, y):
-        pass
-
-    def app_start(self, package, activity, stop=False):
-        pass
-
-    def open_deeplink(self, uri):
-        pass
-
-    def press_key(self, name):
-        pass
-
-    def swipe(self, sx, sy, ex, ey, duration):
-        pass
-
-    def dump_ui(self):
-        return TREE_XML
-
-
-@pytest.fixture
-def client():
-    backend = ViewerBackend()
-    session, backend_ref = _make_session(backend)
-    app = create_app(session, SnapshotStore(), preview_interval=0.1)
-    return TestClient(app), session, backend_ref
-
-
-def _make_session(backend):
-    from fakes import NullLease, make_session
-
-    session, backend_ref = make_session(backend=backend, lease_factory=lambda s: NullLease(s))
-    session.start()
-    session.release_lease()  # 网页空闲态:READY
-    return session, backend_ref
+from mobile_auto.viewer.app import capture_snapshot_sync
 
 
 def test_status_reports_device_and_lease(client):
@@ -143,10 +66,8 @@ def test_freeze_pins_snapshot(client):
     assert http.get(f"/api/v1/snapshots/{sid}/image").status_code == 200
 
 
-def test_cross_origin_and_host_rejected():
-    backend = ViewerBackend()
-    session, _ = _make_session(backend)
-    http = TestClient(create_app(session, SnapshotStore()))
+def test_cross_origin_and_host_rejected(client):
+    http, _, _ = client
     res = http.get("/api/v1/status", headers={"origin": "http://evil.example.com"})
     assert res.status_code == 403
     res = http.get("/api/v1/status", headers={"host": "evil.example.com:8765"})
@@ -177,9 +98,8 @@ def test_preview_ws_busy_status_when_lease_held(client):
     assert frame["busy"] is True
 
 
-def test_capture_sync_returns_snapshot(tmp_path=None):
-    backend = ViewerBackend()
-    session, _ = _make_session(backend)
+def test_capture_sync_returns_snapshot():
+    session, _ = make_viewer_session(ViewerBackend())
     snapshot = capture_snapshot_sync(session, with_tree=True)
     assert snapshot.png.startswith(b"\x89PNG")
     assert snapshot.tree_json is not None

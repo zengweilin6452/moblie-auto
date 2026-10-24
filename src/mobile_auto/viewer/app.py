@@ -18,7 +18,9 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
+from ..contracts import Locator, Target
 from ..errors import (
+    AmbiguousTarget,
     ConfigurationError,
     DeviceBusy,
     DeviceUnavailable,
@@ -30,15 +32,26 @@ from ..errors import (
     StaleHandle,
     UnsupportedOperation,
 )
+from ..selectors import (
+    select_matches,
+    validate_locatable,
+    visible_only,
+)
 from ..session import DeviceSession, SessionState
+from ..ui_tree import flatten, parse_ui_hierarchy
+from .candidates import candidates_for_node, xpath_candidate
 from .store import Snapshot, SnapshotStore
 
 _PREVIEW_INTERVAL_SECONDS = 1.0
 _MAX_WS_CLIENTS = 2
+
 _CAPTURE_TIMEOUT_SECONDS = 10.0
 _TREE_INTERVAL_LIMIT_SECONDS = 1.0  # 截图与树采集间隔超限判定(快照不一致)
 
 _STATIC_DIR = Path(__file__).parent / "static"
+
+# 验证查询支持的定位方式:五种原生 + IMAGE(Locator 不含 CSS)
+NATIVE_QUERY_LOCATORS = frozenset(Locator)
 
 _ERROR_STATUS = {
     UnsupportedOperation: 400,
@@ -178,6 +191,90 @@ def create_app(
             "frozen_at": snapshot.frozen_at.isoformat() if snapshot.frozen_at else None,
         }
 
+    # ── 原生拾取与定位验证(plan 8.2)─────────────────────────
+
+    @app.post("/api/v1/pick")
+    async def pick(request: Request):
+        body = await request.json()
+        snapshot = store.get(body.get("snapshot_id", ""))
+        if snapshot is None:
+            return error_envelope(request, 404, "not-found", "快照不存在或已过期")
+        if snapshot.tree_root is None:
+            return error_envelope(
+                request, 400, "capability-unavailable",
+                snapshot.tree_error or "UI 树不可用,原生拾取已禁用;图像定位不受影响",
+            )
+        x, y = int(body.get("x", -1)), int(body.get("y", -1))
+        if not (0 <= x < snapshot.width and 0 <= y < snapshot.height):
+            return error_envelope(request, 422, "invalid-input", "拾取坐标超出快照范围")
+        hits = [
+            node
+            for node in flatten(snapshot.tree_root)
+            if node.bounds
+            and node.bounds[0] <= x < node.bounds[2]
+            and node.bounds[1] <= y < node.bounds[3]
+        ]
+        hits.sort(key=lambda n: (n.bounds[2] - n.bounds[0]) * (n.bounds[3] - n.bounds[1]))
+        candidates = []
+        for node in hits[:8]:
+            locators = candidates_for_node(node)
+            xpath = xpath_candidate(snapshot.tree_root, node)
+            if xpath:
+                locators.append(xpath)
+            candidates.append(
+                {
+                    "class_name": node.class_name,
+                    "bounds": list(node.bounds),
+                    "text": node.text,
+                    "resource_id": node.resource_id,
+                    "locators": locators,
+                }
+            )
+        return {
+            "snapshot_id": snapshot.id,
+            "point": [x, y],
+            "candidates": candidates,
+            "overlap": len(candidates) > 1,  # 重叠候选由用户选择,不静默选节点
+        }
+
+    @app.post("/api/v1/locators/validate")
+    async def validate_locator(request: Request):
+        body = await request.json()
+        target_body = body.get("target") or {}
+        try:
+            region = target_body.get("region")
+            target = Target(
+                by=target_body.get("by"),
+                value=target_body.get("value"),
+                index=target_body.get("index"),
+                confidence=target_body.get("confidence"),
+                region=tuple(region) if region else None,
+            )
+        except MobileAutoError as exc:
+            return error_envelope(request, 422, "invalid-target", str(exc))
+        try:
+            snapshot, matches = await asyncio.to_thread(
+                capture_and_query_sync, session, store, target
+            )
+        except AmbiguousTarget as exc:
+            return error_envelope(request, 409, "ambiguous-target", str(exc))
+        return {
+            "snapshot_id": snapshot.id,
+            "captured_at": snapshot.captured_at,
+            "count": len(matches),
+            "matches": matches,
+            "passed": len(matches) == 1,
+            "note": (
+                "唯一匹配,验证通过"
+                if len(matches) == 1
+                else (
+                    "零匹配:目标未出现,验证不通过"
+                    if not matches
+                    else f"多匹配 {len(matches)} 个:需序号或收窄定位,不视为通过"
+                )
+            ),
+        }
+
     # ── 预览 WS ───────────────────────────────────────────────
 
     @app.websocket("/api/v1/preview")
@@ -246,15 +343,19 @@ def _build_preview_frame(session: DeviceSession, store: SnapshotStore) -> dict:
             ),
         }
     try:
-        snapshot = capture_snapshot_sync(session, with_tree=False)
-        store.add(snapshot)
+        # 预览帧是瞬态观察,不入快照库:不挤占拾取/验证用的用户快照
+        session.acquire_lease()
+        try:
+            future = session.submit(lambda backend: backend.screenshot_png())
+            png = future.result(timeout=_CAPTURE_TIMEOUT_SECONDS)
+        finally:
+            session.release_lease()
         return {
             "kind": "frame",
-            "captured_at": snapshot.captured_at,
-            "snapshot_id": snapshot.id,
-            "width": snapshot.width,
-            "height": snapshot.height,
-            "jpeg_base64": base64.b64encode(_png_to_jpeg(snapshot.png)).decode("ascii"),
+            "captured_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
+            "width": 0,
+            "height": 0,
+            "jpeg_base64": base64.b64encode(_png_to_jpeg(png)).decode("ascii"),
         }
     except MobileAutoError as exc:
         return {
@@ -299,7 +400,70 @@ def capture_snapshot_sync(session: DeviceSession, with_tree: bool) -> Snapshot:
         tree_json=tree_xml and _normalized_tree_json(tree_xml),
         tree_captured_at=now.isoformat(timespec="milliseconds") if tree_xml else None,
         tree_error=tree_error,
+        tree_root=parse_ui_hierarchy(tree_xml) if tree_xml and len(tree_xml) >= 100 else None,
     )
+
+
+def capture_and_query_sync(session: DeviceSession, store: SnapshotStore, target: Target):
+    """验证短事务:获取租约 → 新采集截图 + 按定位方式重查询 → 释放。
+
+    返回 (新快照, 命中列表);查询语义与驱动一致(可见性过滤 + 序号规则)。
+    """
+
+    session.acquire_lease()
+    try:
+        future = session.submit(lambda backend: _query_payload(backend, session, store, target))
+        try:
+            png, screen, matches = future.result(timeout=_CAPTURE_TIMEOUT_SECONDS)
+        except TimeoutError as exc:
+            future.cancel()
+            raise DeviceUnavailable("定位验证查询超时") from exc
+    finally:
+        session.release_lease()
+    now = datetime.now(UTC)
+    snapshot = Snapshot(
+        png=png,
+        width=int(screen[0]),
+        height=int(screen[1]),
+        orientation="portrait" if screen[1] >= screen[0] else "landscape",
+        captured_at=now.isoformat(timespec="milliseconds"),
+    )
+    store.add(snapshot)
+    return snapshot, matches
+
+
+def _query_payload(backend, session, store, target: Target):
+    from ..assets import TemplateStore
+    from ..image import match_template
+
+    png = backend.screenshot_png()
+    screen = backend.screen_size()
+    if target.by.value == "image":
+        template = TemplateStore(session.config.assets_dir).load(target.value)
+        results = match_template(
+            png, template.png, confidence=target.confidence, region=target.region
+        )
+        chosen = select_matches(results, target)
+    else:
+        validate_locatable(target, NATIVE_QUERY_LOCATORS)
+        elements = backend.find_elements(target.by, target.value)
+        chosen = select_matches(visible_only(elements, screen), target)
+    matches = [
+        {
+            "x": int(b[0]),
+            "y": int(b[1]),
+            "width": int(b[2] - b[0]),
+            "height": int(b[3] - b[1]),
+        }
+        for b in (_bounds_of(item) for item in chosen)
+    ]
+    return png, screen, matches
+
+
+def _bounds_of(item):
+    if hasattr(item, "bounds"):  # 后端元素
+        return item.bounds
+    return (item.x, item.y, item.width, item.height)  # MatchResult
 
 
 def _capture_payload(backend, with_tree: bool):
@@ -313,8 +477,6 @@ def _normalized_tree_json(tree_xml: str) -> str | None:
     if not tree_xml or len(tree_xml) < 100:
         return None  # 空 dump(部分 ROM 偶发)按未采集处理,错误信息由调用方标注
     import json
-
-    from ..ui_tree import flatten, parse_ui_hierarchy
 
     root = parse_ui_hierarchy(tree_xml)
     indexed = list(enumerate(flatten(root)))

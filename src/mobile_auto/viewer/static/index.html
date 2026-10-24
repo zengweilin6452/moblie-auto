@@ -16,14 +16,39 @@
   </header>
   <main>
     <section id="preview-pane">
-      <h2>实时预览 <small id="preview-time"></small></h2>
-      <img id="preview" alt="设备画面" />
-      <p id="preview-message"></p>
+      <h2>画面 <small id="preview-time"></small></h2>
+      <div id="stage">
+        <img id="preview" alt="设备画面" />
+        <div id="overlay"></div>
+      </div>
+      <p id="preview-message">点击画面拾取控件;点击树节点显示边界框。</p>
     </section>
-    <section id="tree-pane">
-      <h2>UI 树 <small id="tree-time"></small></h2>
-      <p id="tree-meta"></p>
-      <ul id="tree"></ul>
+    <section id="inspect-pane">
+      <nav class="tabs">
+        <button class="tab active" data-tab="native" type="button">控件</button>
+        <button class="tab" data-tab="image" type="button">图像</button>
+      </nav>
+      <div id="tab-native">
+        <h2>UI 树 <small id="tree-time"></small></h2>
+        <p id="tree-meta">采集快照后显示。UI 树不可用时原生拾取禁用,图像定位不受影响。</p>
+        <ul id="tree"></ul>
+        <div id="candidates">
+          <h2>拾取候选 <small id="pick-point"></small></h2>
+          <p id="pick-hint">点击画面后此处列出候选;重叠时请自行选择。</p>
+          <ul id="candidate-list"></ul>
+          <div id="validate-box">
+            <button id="btn-validate" type="button" disabled>验证选中定位</button>
+            <span id="validate-note"></span>
+          </div>
+          <div id="expression-box">
+            <code id="expression"></code>
+            <button id="btn-copy" type="button" disabled>复制表达式</button>
+          </div>
+        </div>
+      </div>
+      <div id="tab-image" class="hidden">
+        <p>图像模板制作随模板制作工单交付;当前可复制 IMAGE 定位描述。</p>
+      </div>
     </section>
   </main>
   <script src="/app.js"></script>
