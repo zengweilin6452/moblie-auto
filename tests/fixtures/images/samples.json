@@ -1,0 +1,117 @@
+[
+  {
+    "screenshot": "page-main.png",
+    "template": "t-wlan-row.png",
+    "box": [
+      198,
+      1336,
+      131,
+      63
+    ],
+    "expect": "positive"
+  },
+  {
+    "screenshot": "page-main.png",
+    "template": "t-search-bar.png",
+    "box": [
+      186,
+      443,
+      829,
+      69
+    ],
+    "expect": "positive"
+  },
+  {
+    "screenshot": "page-wlan.png",
+    "template": "t-advanced.png",
+    "box": [
+      76,
+      952,
+      188,
+      69
+    ],
+    "expect": "positive"
+  },
+  {
+    "screenshot": "page-main.png",
+    "template": "t-advanced.png",
+    "expect": "empty",
+    "note": "目标不在该页"
+  },
+  {
+    "screenshot": "page-main-jpeg85.png",
+    "template": "t-wlan-row.png",
+    "box": [
+      198,
+      1336,
+      131,
+      63
+    ],
+    "expect": "positive",
+    "note": "同色轻微渲染差异须接受"
+  },
+  {
+    "screenshot": "page-scrolled.png",
+    "template": "t-desk.png",
+    "box": [
+      198,
+      980,
+      94,
+      69
+    ],
+    "expect": "positive"
+  },
+  {
+    "screenshot": "page-main.png",
+    "template": "t-desk.png",
+    "expect": "empty",
+    "note": "滚动前不可见"
+  },
+  {
+    "screenshot": "page-wlan.png",
+    "template": "t-title-wlan.png",
+    "box": [
+      71,
+      251,
+      244,
+      117
+    ],
+    "expect": "positive"
+  },
+  {
+    "screenshot": "page-wlan-jpeg85.png",
+    "template": "t-title-wlan.png",
+    "box": [
+      71,
+      251,
+      244,
+      117
+    ],
+    "expect": "positive",
+    "note": "同色轻微渲染差异须接受"
+  },
+  {
+    "screenshot": "page-scrolled.png",
+    "template": "t-search-bar.png",
+    "expect": "empty",
+    "note": "滚动后不在可见区"
+  },
+  {
+    "screenshot": "page-main.png",
+    "template": "t-icon-wlan.png",
+    "box": [
+      75,
+      1327,
+      81,
+      81
+    ],
+    "expect": "positive",
+    "note": "彩色图标(WLAN)"
+  },
+  {
+    "screenshot": "page-main.png",
+    "template": "t-icon-recolor.png",
+    "expect": "empty",
+    "note": "形状相同状态色不同(通道对调)"
+  }
+]
