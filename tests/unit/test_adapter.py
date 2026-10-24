@@ -58,6 +58,55 @@ async def test_find_elements_with_index_returns_at_most_one():
     assert await adapter.find_elements(Target(Locator.TEXT, "行", index=9)) == []
 
 
+async def test_multi_element_handles_are_individually_usable():
+    """多元素查询的每个句柄须记录自己的序号:重校验按序号重定位,
+    各自可点击,不全部串位到第一个结果。"""
+    first, second = FakeElement((0, 0, 10, 10)), FakeElement((0, 20, 10, 30))
+    adapter, backend = make_adapter(
+        backend=backend_with({("text", "行"): [first, second]})
+    )
+    handles = await adapter.find_elements(Target(Locator.TEXT, "行"))
+    assert [h.target.index for h in handles] == [0, 1]
+    await handles[1].click()
+    assert second.click_calls == 1 and first.click_calls == 0
+    await handles[0].click()
+    assert first.click_calls == 1 and second.click_calls == 1
+
+
+async def test_click_index_out_of_range_reports_not_found():
+    """单目标 index 越界报 ElementNotFound(可轮询语义),不泄漏 IndexError。"""
+    config = MobileConfig(device_serial="SERIAL1", wait_timeout=0.1, poll_interval=0.02)
+    adapter, _ = make_adapter(
+        backend=backend_with({("text", "行"): [FakeElement((0, 0, 10, 10))]}),
+        config=config,
+    )
+    with pytest.raises(ElementNotFound):
+        await adapter.click(Target(Locator.TEXT, "行", index=3))
+
+
+async def test_image_click_freshness_includes_match_time(monkeypatch):
+    """图像点击新鲜度计时含采集与匹配:耗时较长的匹配不得把过期结果
+    当新鲜结果点击(计时从采集开始,而非匹配完成后)。"""
+    import time
+
+    import mobile_auto.core.adapter as adapter_module
+
+    adapter, backend = make_adapter()
+
+    class FakeResult:
+        center = (5, 5)
+
+    def slow_match(self, backend, target):
+        time.sleep(0.05)
+        return {}, [FakeResult()]
+
+    monkeypatch.setattr(adapter_module.MobileAdapter, "_image_match", slow_match)
+    monkeypatch.setattr(adapter_module, "_IMAGE_FRESH_SECONDS", 0.01)
+    with pytest.raises(DeviceUnavailable, match="持续过期"):
+        await adapter.click(Target(Locator.IMAGE, "demo/target.png"))
+    assert backend.taps == []
+
+
 async def test_click_unique_element():
     elements = [FakeElement((0, 0, 10, 10))]
     adapter, _ = make_adapter(backend=backend_with({("text", "登录"): elements}))

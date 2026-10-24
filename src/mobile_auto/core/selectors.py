@@ -112,18 +112,25 @@ def select_matches(elements: list, target: Target) -> list:
 
 
 def resolve_single(elements: list, target: Target):
-    """单目标操作的选择:零匹配报不存在,多匹配无序号报歧义。"""
+    """单目标操作的选择:零匹配或序号越界报不存在,多匹配无序号报歧义。"""
     if not elements:
         raise ElementNotFound(
             f"未找到可见匹配:{target.by.value}={target.value!r}"
             + (f"[{target.index}]" if target.index is not None else "")
         )
-    if target.index is None and len(elements) > 1:
-        raise AmbiguousTarget(
-            f"定位 {target.by.value}={target.value!r} 匹配到 {len(elements)} 个可见元素,"
-            "未指定序号;请改用 index 或收窄定位"
+    if target.index is None:
+        if len(elements) > 1:
+            raise AmbiguousTarget(
+                f"定位 {target.by.value}={target.value!r} 匹配到 {len(elements)} 个可见元素,"
+                "未指定序号;请改用 index 或收窄定位"
+            )
+        return elements[0]
+    if target.index >= len(elements):
+        # 越界与零匹配同语义:本轮未出现,交由单目标轮询继续,不泄漏 IndexError
+        raise ElementNotFound(
+            f"未找到可见匹配:{target.by.value}={target.value!r}[{target.index}]"
         )
-    return elements[target.index] if target.index is not None else elements[0]
+    return elements[target.index]
 
 
 def identity_of(info: dict) -> tuple[str, str, str]:

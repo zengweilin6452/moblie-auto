@@ -9,6 +9,7 @@ pytest 直接调用本适配器,不经 HTTP;所有设备访问经 DeviceSession 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import math
 import threading
 import time
@@ -155,13 +156,14 @@ class MobileAdapter:
     def _image_click_transaction(self, backend, target: Target) -> None:
         """图像点击事务:采集→匹配→选择→检查点→发送,同一队列任务内完成,
         其他设备请求无法插队(plan 6.2)。采集到发送超过 1 秒则重采集一次,
-        仍过期则失败,不无限重试。"""
-        template_meta, results = self._image_match(backend, target)
+        仍过期则失败,不无限重试。计时含采集与匹配:耗时较长的匹配同样
+        消耗新鲜度,不得把过期结果当新鲜结果点击。"""
         captured_at = time.monotonic()
+        template_meta, results = self._image_match(backend, target)
         chosen = resolve_single(results, target)
         if time.monotonic() - captured_at > _IMAGE_FRESH_SECONDS:
-            template_meta, results = self._image_match(backend, target)
             captured_at = time.monotonic()
+            template_meta, results = self._image_match(backend, target)
             chosen = resolve_single(results, target)
             if time.monotonic() - captured_at > _IMAGE_FRESH_SECONDS:
                 raise DeviceUnavailable(
@@ -311,20 +313,30 @@ class MobileAdapter:
 
     async def find_elements(self, target: Target) -> list[ElementHandle]:
         """无序号返回全部可见匹配(树遍历序);有序号返回至多一个。
-        句柄绑定本会话,重用前自动重校验。IMAGE 目标为屏幕匹配结果。"""
+        句柄绑定本会话,重用前自动重校验;每个句柄的 Target 记录自己的
+        序号,重校验按序号重定位、按身份确认,互不串位。IMAGE 目标为
+        屏幕匹配结果。"""
+
+        def per_result(offset: int) -> Target:
+            # 无序号查询的每个结果需要独立身份;原 Target 是共享不可变值
+            if target.index is None:
+                return dataclasses.replace(target, index=offset)
+            return target  # 有序号查询至多一个结果,序号即身份
 
         def operation(backend):
             if target.by.value == "image":
                 meta, results = self._image_match(backend, target)
                 screen = backend.screen_size()
                 return [
-                    make_image_handle(target, result, meta, screen, owner=self._session)
-                    for result in select_matches(results, target)
+                    make_image_handle(
+                        per_result(offset), result, meta, screen, owner=self._session
+                    )
+                    for offset, result in enumerate(select_matches(results, target))
                 ]
             matches = self._locate(backend, target)
             return [
-                make_handle(element, target, owner=self._session)
-                for element in select_matches(matches, target)
+                make_handle(element, per_result(offset), owner=self._session)
+                for offset, element in enumerate(select_matches(matches, target))
             ]
 
         return await self._call(operation)

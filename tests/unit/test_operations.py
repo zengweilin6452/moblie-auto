@@ -221,18 +221,28 @@ async def test_stale_handle_when_target_disappears():
         await handle.get_text()
 
 
-async def test_handle_rejected_when_ambiguous():
+async def test_handle_resolves_by_recorded_index_and_stales_when_shrunk():
+    """多元素查询的句柄按记录的序号重定位、按身份确认:各自可用,不串位;
+    匹配列表缩短致序号消失时报 StaleHandle,不指向其他节点。"""
     rows = [
-        FakeElement((0, 0, 100, 50), info={"className": "android.widget.TextView"}),
-        FakeElement((0, 60, 100, 110), info={"className": "android.widget.TextView"}),
+        FakeElement(
+            (0, 0, 100, 50),
+            text="第一行",
+            info={"className": "android.widget.TextView"},
+        ),
+        FakeElement(
+            (0, 60, 100, 110),
+            text="第二行",
+            info={"className": "android.widget.TextView"},
+        ),
     ]
-    adapter, _ = make_adapter(
-        backend=FakeBackend(elements={("text", "WLAN"): rows}),
-        config=SMALL_BUDGET,
-    )
-    target = Target(Locator.TEXT, "WLAN")
-    handles = await adapter.find_elements(target)
+    backend = FakeBackend(elements={("text", "WLAN"): rows})
+    adapter, _ = make_adapter(backend=backend, config=SMALL_BUDGET)
+    handles = await adapter.find_elements(Target(Locator.TEXT, "WLAN"))
     assert len(handles) == 2
-    # 两条同文本且无序号:句柄重用遇到歧义 → 句柄过期,不指向任意节点
+    assert await handles[0].get_text() == "第一行"
+    assert await handles[1].get_text() == "第二行"
+
+    backend.elements[("text", "WLAN")] = [rows[0]]  # 页面变化:匹配列表缩短
     with pytest.raises(StaleHandle):
-        await handles[0].get_text()
+        await handles[1].get_text()

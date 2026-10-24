@@ -65,6 +65,12 @@ def test_resolve_single_requires_existence_and_uniqueness():
     assert resolve_single(["a", "b"], Target(Locator.TEXT, "确定", index=1)) == "b"
 
 
+def test_resolve_single_index_out_of_range_is_not_found():
+    """序号越界与零匹配同语义:报 ElementNotFound,不泄漏 IndexError。"""
+    with pytest.raises(ElementNotFound, match=r"\[3\]"):
+        resolve_single(["only"], Target(Locator.TEXT, "确定", index=3))
+
+
 def test_validate_locatable_reports_future_stages():
     validate_locatable(Target(Locator.TEXT, "x"), ALLOWED)
     validate_locatable(Target(Locator.RESOURCE_ID, "x"), ALLOWED)
