@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "logical": "studio/real.png",
+  "image_sha256": "f9ac94ccaf1a750b2f5f3ea9700510004fff34a017f0ae231ce035dff7ce1bf0",
+  "width": 24,
+  "height": 24,
+  "source_width": 150,
+  "source_height": 200,
+  "orientation": "portrait",
+  "app_package": "",
+  "capture_time": "2026-10-24T07:24:09.159+00:00",
+  "note": ""
+}

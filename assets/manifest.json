@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "templates": {
+    "studio/dup.png": {
+      "image_sha256": "06cc783b4816fca3e8160ebb2649b86b1044db7e670296acd860d246ee624571",
+      "version_id": "0627d58c1c534bf1a350565cd0689df3"
+    },
+    "studio/real.png": {
+      "image_sha256": "f9ac94ccaf1a750b2f5f3ea9700510004fff34a017f0ae231ce035dff7ce1bf0",
+      "version_id": "d7f6cbc2119743a1a0af6124d8e6f4b5"
+    },
+    "studio/target.png": {
+      "image_sha256": "1dd3fdd062de4fe520de6fbc7a3f84d7201f11f76d94373851750a5ed0271b81",
+      "version_id": "6f9ccbd68f184978adbd802b35e5b957"
+    }
+  }
+}

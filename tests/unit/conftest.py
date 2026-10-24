@@ -3,8 +3,11 @@
 import cv2
 import numpy as np
 import pytest
+from fakes import NullLease
 from fastapi.testclient import TestClient
 
+from mobile_auto import MobileConfig
+from mobile_auto.session import DeviceSession
 from mobile_auto.viewer.app import create_app
 from mobile_auto.viewer.store import SnapshotStore
 
@@ -94,7 +97,18 @@ def make_viewer_session(backend):
 
 
 @pytest.fixture
-def client():
-    session, backend = make_viewer_session(ViewerBackend())
+def client(tmp_path):
+
+    # assets/artifacts 指向测试独立目录,避免跨测试残留同名模板
+    config = MobileConfig(device_serial="SERIAL1", assets_dir=tmp_path / "assets")
+    session = DeviceSession(
+        config,
+        backend_factory=lambda: ViewerBackend(),
+        device_enumerator=lambda: {"SERIAL1": "device"},
+        lease_factory=lambda s: NullLease(s),
+    )
+    session.start()
+    session.release_lease()
     app = create_app(session, SnapshotStore(), preview_interval=0.1)
-    return TestClient(app), session, backend
+    yield TestClient(app), session, session._backend
+    session.close()

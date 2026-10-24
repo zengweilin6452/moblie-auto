@@ -2,8 +2,52 @@
   "schema_version": 1,
   "templates": {
     "demo/wlan-target.png": {
-      "image_sha256": "3f87c03908c0c38b52016dc0c72a28d9a4c112ecc18a14411d5dac71f73f9fbf",
-      "version_id": "dd2300b1b6334b49a6aa702b59b5f759"
+      "image_sha256": "eaef9b223fdc11b3fe860479286e65cf43cbb24230ffa7a4be482a76ccf93832",
+      "version_id": "491a8ecedc0445288379185e16010408"
+    },
+    "studio/dbg-123600.png": {
+      "image_sha256": "daad5b4969c647c5396401414b96662f86c4b45ef92d25cbc06ee3cdcab75e05",
+      "version_id": "58f2aa95c69442debe348004170a4ce2"
+    },
+    "studio/wlan-row-1310600.png": {
+      "image_sha256": "d5d378772a1fff362a029982d3354c24b8799c08fbd288b14d1f540c6e2cfae9",
+      "version_id": "ff2215c6e8d0495e916e5684deca8e61"
+    },
+    "studio/wlan-row-185300.png": {
+      "image_sha256": "cada7d0e95fe49148e3fd68dfa23a00314c86ee48a99b80c63818ac76f178356",
+      "version_id": "f7ca03d628f94d29bc3fe0fbd7dd2048"
+    },
+    "studio/wlan-row-4456900.png": {
+      "image_sha256": "f2359840ba88ed4669559174e4ea7a6aa63776e16c11bcdd615ff21b7561334e",
+      "version_id": "a5aad2b39a884a2f89012e48c465e579"
+    },
+    "studio/wlan-row-4566200.png": {
+      "image_sha256": "daad5b4969c647c5396401414b96662f86c4b45ef92d25cbc06ee3cdcab75e05",
+      "version_id": "e61c0027d4dc4eea8466aefad060b62b"
+    },
+    "studio/wlan-row-5691100.png": {
+      "image_sha256": "daad5b4969c647c5396401414b96662f86c4b45ef92d25cbc06ee3cdcab75e05",
+      "version_id": "36f8bbcb09db4c57a27c5799313987e0"
+    },
+    "studio/wlan-row-586900.png": {
+      "image_sha256": "0f63e73c07efc4c0b75610b5ff768d356cdad04f010be493ff9e791f91503856",
+      "version_id": "598c6f3b87b249dca004ce5e39616cce"
+    },
+    "studio/wlan-row-6042900.png": {
+      "image_sha256": "daad5b4969c647c5396401414b96662f86c4b45ef92d25cbc06ee3cdcab75e05",
+      "version_id": "8ee559fcce9242989fd1ef3c8c4fb8eb"
+    },
+    "studio/wlan-row-879600.png": {
+      "image_sha256": "daad5b4969c647c5396401414b96662f86c4b45ef92d25cbc06ee3cdcab75e05",
+      "version_id": "8d62a157efba4b7eaf17d6cf35346879"
+    },
+    "studio/wlan-row-9401000.png": {
+      "image_sha256": "daad5b4969c647c5396401414b96662f86c4b45ef92d25cbc06ee3cdcab75e05",
+      "version_id": "a9d99d75d3184cd98dc99ea7b616a11a"
+    },
+    "studio/wlan-row.png": {
+      "image_sha256": "f945de39c0aea087c1d58ef67f1f4ace2cdc5d8a459f00c11e55f5357374cf6b",
+      "version_id": "64939413d94242b4bedfc4c4f4571cec"
     }
   }
 }

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "logical": "studio/dup.png",
+  "image_sha256": "06cc783b4816fca3e8160ebb2649b86b1044db7e670296acd860d246ee624571",
+  "width": 20,
+  "height": 20,
+  "source_width": 150,
+  "source_height": 200,
+  "orientation": "portrait",
+  "app_package": "",
+  "capture_time": "2026-10-24T07:24:08.959+00:00",
+  "note": ""
+}

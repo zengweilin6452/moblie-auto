@@ -56,8 +56,8 @@ NATIVE_QUERY_LOCATORS = frozenset(Locator)
 _ERROR_STATUS = {
     UnsupportedOperation: 400,
     MatchOverflow: 400,
-    InvalidTarget: 400,
-    InvalidTemplate: 400,
+    InvalidTarget: 422,
+    InvalidTemplate: 422,
     ConfigurationError: 400,
     StaleHandle: 409,
     DeviceBusy: 409,
@@ -189,6 +189,121 @@ def create_app(
             "snapshot_id": snapshot.id,
             "frozen": snapshot.frozen,
             "frozen_at": snapshot.frozen_at.isoformat() if snapshot.frozen_at else None,
+        }
+
+    # ── 图像模板制作闭环(plan 8.2;工单 11)─────────────────
+
+    @app.post("/api/v1/templates")
+    async def create_template(request: Request):
+        """从服务端保留的快照裁剪原始像素生成模板;不接受浏览器图片。"""
+        body = await request.json()
+        snapshot = store.get(body.get("snapshot_id", ""))
+        if snapshot is None:
+            return error_envelope(request, 404, "not-found", "快照不存在或已过期")
+        region = body.get("region")
+        if (
+            not isinstance(region, list)
+            or len(region) != 4
+            or any(isinstance(v, bool) or not isinstance(v, int) for v in region)
+        ):
+            return error_envelope(request, 422, "invalid-input", "region 必须是四个整数")
+        logical = str(body.get("logical") or "").strip()
+        if not logical:
+            return error_envelope(request, 422, "invalid-input", "模板名不能为空")
+        try:
+            loaded = await asyncio.to_thread(
+                _crop_and_register, session, snapshot, logical, region, body, None
+            )
+        except MobileAutoError as exc:
+            status = 409 if isinstance(exc, StaleHandle) else _ERROR_STATUS.get(type(exc), 400)
+            return error_envelope(request, status, type(exc).__name__, str(exc))
+        return _template_payload(loaded)
+
+    @app.put("/api/v1/templates/{logical:path}")
+    async def update_template(logical: str, request: Request):
+        """确认更新:期望旧摘要与新裁剪参数;摘要不符返回冲突(409)。"""
+        body = await request.json()
+        snapshot = store.get(body.get("snapshot_id", ""))
+        if snapshot is None:
+            return error_envelope(request, 404, "not-found", "快照不存在或已过期")
+        expected = str(body.get("expected_old_sha256") or "")
+        try:
+            loaded = await asyncio.to_thread(
+                _crop_and_register, session, snapshot, logical, body.get("region"), body, expected
+            )
+        except MobileAutoError as exc:
+            status = 409 if isinstance(exc, StaleHandle) else _ERROR_STATUS.get(type(exc), 400)
+            return error_envelope(request, status, type(exc).__name__, str(exc))
+        return _template_payload(loaded)
+
+    @app.get("/api/v1/templates")
+    async def list_templates(request: Request):
+        from ..assets import TemplateStore
+
+        entries = [
+            {
+                "logical": logical,
+                "version_id": entry["version_id"],
+                "image_sha256": entry["image_sha256"],
+            }
+            for logical, entry in TemplateStore(
+                session.config.assets_dir
+            ).list_templates().items()
+        ]
+        return {"templates": entries}
+
+    @app.get("/api/v1/templates/{logical:path}/image")
+    async def template_image(logical: str, request: Request):
+        from ..assets import TemplateStore
+
+        try:
+            loaded = TemplateStore(session.config.assets_dir).load(logical)
+        except MobileAutoError as exc:
+            return error_envelope(request, 404, "not-found", str(exc))
+        return Response(
+            content=loaded.png,
+            media_type="image/png",
+            headers={"cache-control": "no-store"},
+        )
+
+    @app.post("/api/v1/templates/validate")
+    async def validate_template(request: Request):
+        """IMAGE 定位验证:重新采集匹配,回传数量、分数与边界框。"""
+        body = await request.json()
+        target_body = body.get("target") or {}
+        try:
+            region = target_body.get("region")
+            target = Target(
+                by=target_body.get("by") or "image",
+                value=target_body.get("value") or "",
+                index=target_body.get("index"),
+                confidence=target_body.get("confidence"),
+                region=tuple(region) if region else None,
+            )
+            if target.by.value != "image":
+                return error_envelope(
+                    request, 422, "invalid-input", "该端点仅接受 IMAGE 目标"
+                )
+        except MobileAutoError as exc:
+            return error_envelope(request, 422, "invalid-target", str(exc))
+        try:
+            snapshot, matches, scores = await asyncio.to_thread(
+                capture_and_query_sync, session, store, target, True
+            )
+        except AmbiguousTarget as exc:
+            return error_envelope(request, 409, "ambiguous-target", str(exc))
+        return {
+            "snapshot_id": snapshot.id,
+            "captured_at": snapshot.captured_at,
+            "count": len(matches),
+            "matches": matches,
+            "scores": scores,
+            "passed": len(matches) == 1,
+            "note": (
+                "唯一匹配,验证通过"
+                if len(matches) == 1
+                else ("零匹配:目标未出现" if not matches else f"多匹配 {len(matches)} 个:需序号")
+            ),
         }
 
     # ── 原生拾取与定位验证(plan 8.2)─────────────────────────
@@ -404,22 +519,29 @@ def capture_snapshot_sync(session: DeviceSession, with_tree: bool) -> Snapshot:
     )
 
 
-def capture_and_query_sync(session: DeviceSession, store: SnapshotStore, target: Target):
+def capture_and_query_sync(
+    session: DeviceSession, store: SnapshotStore, target: Target, with_scores: bool = False
+):
     """验证短事务:获取租约 → 新采集截图 + 按定位方式重查询 → 释放。
 
-    返回 (新快照, 命中列表);查询语义与驱动一致(可见性过滤 + 序号规则)。
+    返回 (新快照, 命中列表[, 分数列表]);查询语义与驱动一致。
     """
 
     session.acquire_lease()
     try:
         future = session.submit(lambda backend: _query_payload(backend, session, store, target))
         try:
-            png, screen, matches = future.result(timeout=_CAPTURE_TIMEOUT_SECONDS)
+            payload = future.result(timeout=_CAPTURE_TIMEOUT_SECONDS)
         except TimeoutError as exc:
             future.cancel()
             raise DeviceUnavailable("定位验证查询超时") from exc
     finally:
         session.release_lease()
+    if with_scores:
+        png, screen, matches, scores = payload
+    else:
+        png, screen, matches = payload
+        scores = None
     now = datetime.now(UTC)
     snapshot = Snapshot(
         png=png,
@@ -429,7 +551,7 @@ def capture_and_query_sync(session: DeviceSession, store: SnapshotStore, target:
         captured_at=now.isoformat(timespec="milliseconds"),
     )
     store.add(snapshot)
-    return snapshot, matches
+    return (snapshot, matches, scores) if with_scores else (snapshot, matches)
 
 
 def _query_payload(backend, session, store, target: Target):
@@ -438,32 +560,96 @@ def _query_payload(backend, session, store, target: Target):
 
     png = backend.screenshot_png()
     screen = backend.screen_size()
+    scores = None
     if target.by.value == "image":
         template = TemplateStore(session.config.assets_dir).load(target.value)
         results = match_template(
             png, template.png, confidence=target.confidence, region=target.region
         )
         chosen = select_matches(results, target)
+        scores = [round(r.confidence, 6) for r in chosen]
     else:
         validate_locatable(target, NATIVE_QUERY_LOCATORS)
         elements = backend.find_elements(target.by, target.value)
         chosen = select_matches(visible_only(elements, screen), target)
-    matches = [
-        {
-            "x": int(b[0]),
-            "y": int(b[1]),
-            "width": int(b[2] - b[0]),
-            "height": int(b[3] - b[1]),
-        }
-        for b in (_bounds_of(item) for item in chosen)
-    ]
-    return png, screen, matches
+    matches = []
+    for item in chosen:
+        if hasattr(item, "bounds"):  # 后端元素:bounds 为 (left, top, right, bottom)
+            left, top, right, bottom = item.bounds
+        else:  # MatchResult:已是 (x, y, width, height)
+            left, top, right, bottom = item.x, item.y, item.x + item.width, item.y + item.height
+        matches.append(
+            {
+                "x": int(left),
+                "y": int(top),
+                "width": int(right - left),
+                "height": int(bottom - top),
+            }
+        )
+    if scores is None:
+        return png, screen, matches
+    return png, screen, matches, scores
 
 
-def _bounds_of(item):
-    if hasattr(item, "bounds"):  # 后端元素
-        return item.bounds
-    return (item.x, item.y, item.width, item.height)  # MatchResult
+def _crop_and_register(session, snapshot, logical, region, body, expected_old):
+    """服务端从保留快照裁剪原始像素,经资产库 create/update 登记。"""
+    import numpy as np
+
+    from ..assets import TemplateStore
+    from ..image import decode_rgb
+
+    if (
+        not isinstance(region, list)
+        or len(region) != 4
+        or any(isinstance(v, bool) or not isinstance(v, int) for v in region)
+    ):
+        raise InvalidTarget("region 必须是四个整数 [x, y, width, height]")
+    rx, ry, rw, rh = region
+    frame = decode_rgb(snapshot.png, what="快照")
+    h, w = frame.shape[:2]
+    if rw <= 0 or rh <= 0 or rx < 0 or ry < 0 or rx + rw > w or ry + rh > h:
+        raise InvalidTemplate(f"裁剪区域 {region} 超出快照 {w}x{h};请收缩框选")
+    crop = np.ascontiguousarray(frame[ry : ry + rh, rx : rx + rw])
+    ok, buf = _cv2_imencode(crop)
+    if not ok:
+        raise InvalidTemplate("模板编码失败")
+    store = TemplateStore(session.config.assets_dir)
+    if expected_old is None:
+        return store.create(
+            logical,
+            buf.tobytes(),
+            source_width=snapshot.width,
+            source_height=snapshot.height,
+            orientation=snapshot.orientation,
+            app_package=session.config.app_package or "",
+            note=str(body.get("note") or ""),
+        )
+    return store.update(
+        logical,
+        buf.tobytes(),
+        expected_old,
+        source_width=snapshot.width,
+        source_height=snapshot.height,
+        orientation=snapshot.orientation,
+        app_package=session.config.app_package or "",
+        note=str(body.get("note") or ""),
+    )
+
+
+def _cv2_imencode(arr_rgb):
+    import cv2
+
+    return cv2.imencode(".png", arr_rgb[:, :, ::-1])
+
+
+def _template_payload(loaded):
+    return {
+        "logical": loaded.logical,
+        "version_id": loaded.version_id,
+        "sha256": loaded.sha256,
+        "width": loaded.width,
+        "height": loaded.height,
+    }
 
 
 def _capture_payload(backend, with_tree: bool):

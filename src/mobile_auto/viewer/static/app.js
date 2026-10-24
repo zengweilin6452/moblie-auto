@@ -230,7 +230,153 @@ function connectPreview() {
   ws.onclose = () => setTimeout(connectPreview, 2000);
 }
 
+/* ── 图像模板制作(工单 11)──────────────────────────────── */
+
+const imageState = { region: null, logical: null, sha256: null };
+
+function imageTabActive() {
+  return document.querySelector(".tab.active").dataset.tab === "image";
+}
+
+function setupMarquee() {
+  const img = $("preview");
+  let start = null;
+  img.addEventListener("mousedown", (event) => {
+    if (!imageTabActive() || !state.snapshotId) return;
+    start = toPixelCoords(event);
+    const box = document.createElement("div");
+    box.id = "marquee";
+    $("overlay").appendChild(box);
+    event.preventDefault();
+  });
+  window.addEventListener("mousemove", (event) => {
+    if (!start) return;
+    const now = toPixelCoords(event);
+    const box = document.getElementById("marquee");
+    if (!box) return;
+    const imgRect = img.getBoundingClientRect();
+    const scale = img.clientWidth / img.naturalWidth;
+    const x0 = Math.min(start.x, now.x), y0 = Math.min(start.y, now.y);
+    const x1 = Math.max(start.x, now.x), y1 = Math.max(start.y, now.y);
+    box.style.left = `${imgRect.left - imgRect.left + (x0 * scale)}px`;
+    box.style.top = `${(y0 * scale)}px`;
+    box.style.width = `${(x1 - x0) * scale}px`;
+    box.style.height = `${(y1 - y0) * scale}px`;
+  });
+  window.addEventListener("mouseup", (event) => {
+    if (!start) return;
+    const now = toPixelCoords(event);
+    document.getElementById("marquee")?.remove();
+    const region = [
+      Math.min(start.x, now.x),
+      Math.min(start.y, now.y),
+      Math.abs(now.x - start.x),
+      Math.abs(now.y - start.y),
+    ];
+    start = null;
+    if (region[2] < 4 || region[3] < 4) return; // 忽略误点
+    imageState.region = region;
+    $("image-hint").textContent = `已框选 (${region.join(", ")});填写模板名后保存。`;
+    $("btn-tpl-save").disabled = false;
+    drawBox(region, "match-box");
+  });
+}
+
+async function saveTemplate() {
+  const logical = $("tpl-name").value.trim();
+  if (!logical) { $("tpl-result").textContent = "请填写模板名(如 demo/target.png)。"; return; }
+  const body = {
+    snapshot_id: state.snapshotId,
+    logical,
+    region: imageState.region,
+    note: "viewer-made",
+  };
+  const res = await fetch("/api/v1/templates", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (res.status === 409) {
+    // 同名存在:请求旧摘要走确认更新
+    const listRes = await fetch("/api/v1/templates");
+    const known = (await listRes.json()).templates.find((t) => t.logical === logical);
+    if (!known) { $("tpl-result").textContent = `保存失败(${data.code}):${data.message}`; return; }
+    if (!confirm(`模板 ${logical} 已存在,基于旧版本确认更新?`)) {
+      $("tpl-result").textContent = "已取消更新。";
+      return;
+    }
+    const upRes = await fetch(`/api/v1/templates/${encodeURIComponent(logical)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...body, expected_old_sha256: known.image_sha256 }),
+    });
+    const upData = await upRes.json();
+    if (!upRes.ok) { $("tpl-result").textContent = `更新失败(${upData.code}):${upData.message}`; return; }
+    imageState.sha256 = upData.sha256;
+    imageState.logical = logical;
+    $("tpl-result").textContent = `已更新为新版本 ${upData.version_id.slice(0, 8)}。`;
+    setImageExpression();
+    return;
+  }
+  if (!res.ok) { $("tpl-result").textContent = `保存失败(${data.code}):${data.message}`; return; }
+  imageState.logical = logical;
+  imageState.sha256 = data.sha256;
+  $("tpl-result").textContent = `模板已保存(${data.width}x${data.height},摘要 ${data.sha256.slice(0, 10)}…)。`;
+  setImageExpression();
+}
+
+function setImageExpression() {
+  const confidence = parseFloat($("tpl-confidence").value);
+  const parts = [`" ${imageState.logical}"`.replace('" ', '"')];
+  let expr = `Target(Locator.IMAGE, ${JSON.stringify(imageState.logical)}`;
+  if (Number.isFinite(confidence) && confidence !== 0.90) {
+    expr += `, confidence=${confidence}`;
+  }
+  if (imageState.region) {
+    expr += `, region=${JSON.stringify(imageState.region)}`;
+  }
+  expr += ")";
+  $("image-expression").textContent = expr;
+  $("btn-tpl-validate").disabled = false;
+  $("btn-image-copy").disabled = false;
+}
+
+async function validateTemplate() {
+  if (!imageState.logical) return;
+  const confidence = parseFloat($("tpl-confidence").value);
+  const target = { by: "image", value: imageState.logical };
+  if (Number.isFinite(confidence)) target.confidence = confidence;
+  if (imageState.region) target.region = imageState.region;
+  $("tpl-result").textContent = "重新匹配中(新截图)…";
+  const res = await fetch("/api/v1/templates/validate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target }),
+  });
+  const data = await res.json();
+  if (!res.ok) { $("tpl-result").textContent = `验证失败(${data.code}):${data.message}`; return; }
+  state.snapshotId = data.snapshot_id;
+  $("preview").src = `/api/v1/snapshots/${data.snapshot_id}/image`;
+  for (const m of data.matches) {
+    drawBox([m.x, m.y, m.x + m.width, m.y + m.height], "match-box");
+  }
+  const scoreText = data.scores ? ` 分数 ${data.scores.map((s) => s.toFixed(3)).join(", ")}` : "";
+  $("tpl-result").textContent = `匹配 ${data.count} 个 · ${data.note}.${scoreText}`;
+}
+
 $("btn-snapshot").addEventListener("click", takeSnapshot);
+$("btn-tpl-save").addEventListener("click", saveTemplate);
+$("btn-tpl-validate").addEventListener("click", validateTemplate);
+$("btn-image-copy").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("image-expression").textContent);
+  $("btn-image-copy").textContent = "已复制";
+  setTimeout(() => ($("btn-image-copy").textContent = "复制 IMAGE 定位"), 1200);
+});
+$("tpl-confidence").addEventListener("change", () => {
+  if (imageState.logical) setImageExpression();
+});
+setupMarquee();
 $("btn-validate").addEventListener("click", validatePicked);
 $("btn-copy").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("expression").textContent);

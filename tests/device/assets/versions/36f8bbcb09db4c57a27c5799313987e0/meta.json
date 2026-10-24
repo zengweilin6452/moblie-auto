@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "logical": "studio/wlan-row-5691100.png",
+  "image_sha256": "daad5b4969c647c5396401414b96662f86c4b45ef92d25cbc06ee3cdcab75e05",
+  "width": 389,
+  "height": 83,
+  "source_width": 1080,
+  "source_height": 2400,
+  "orientation": "portrait",
+  "app_package": "com.android.settings",
+  "capture_time": "2026-10-24T07:55:30.687+00:00",
+  "note": ""
+}
