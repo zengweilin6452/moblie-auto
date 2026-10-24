@@ -178,7 +178,12 @@ class DeviceSession:
             self._state = SessionState.LEASED
 
     def acquire_lease(self) -> None:
-        """READY → LEASED;被占用立即报 DeviceBusy,状态保持 READY。"""
+        """READY → LEASED;被占用立即报 DeviceBusy,状态保持 READY。
+
+        状态迁移在锁内先行完成,再向设备锁发起获取:检查与占位原子,
+        并发调用方在锁上即看到 LEASED,不会出现双持有者导致的二次释放。
+        设备锁获取失败则回滚 READY。
+        """
         with self._lock:
             if self._state == SessionState.LEASED:
                 raise DeviceBusy("设备租约已持有;采集事务不可重入")
@@ -186,22 +191,30 @@ class DeviceSession:
                 raise RuntimeError(
                     f"仅 READY 状态可获取租约,当前 {self._state.value}"
                 )
-        self._lease.acquire()
+            self._state = SessionState.LEASED
+        try:
+            self._lease.acquire()
+        except BaseException:
+            with self._lock:
+                self._state = SessionState.READY
+            raise
         with self._lock:
             self._lease_held = True
-            self._state = SessionState.LEASED
 
     def release_lease(self) -> None:
-        """LEASED → READY;释放不回滚已发送的操作。"""
+        """LEASED → READY;释放不回滚已发送的操作。
+
+        状态迁移在锁内先行完成,保证双重释放必然在此显式报错,
+        而不是落到设备锁层后以竞态方式表现。
+        """
         with self._lock:
             if self._state != SessionState.LEASED:
                 raise RuntimeError(
                     f"仅 LEASED 状态可释放租约,当前 {self._state.value}"
                 )
-        self._lease.release()
-        with self._lock:
-            self._lease_held = False
             self._state = SessionState.READY
+            self._lease_held = False
+        self._lease.release()
 
     # ── scrcpy 截图通道(P1 工单 03)─────────────────────────
 
