@@ -95,6 +95,20 @@ def test_state_color_change_rejected(screenshot_png, template_png):
     assert [(m.x, m.y) for m in results] == [(100, 50)]  # 变色副本不出现
 
 
+def test_local_color_dot_state_change_rejected():
+    """局部色点状态差异:灰度相关 ~0.99、v1 均值差 3.33(<16)会误放行,
+    HSV 门在色相通道失去相关须拒绝(P3 校准依据之一)。"""
+    patch = rng(3).integers(100, 160, size=(24, 24, 3), dtype=np.uint8)
+    patch[6:10, 6:10] = (220, 40, 40)  # 红点
+    green = patch.copy()
+    green[6:10, 6:10] = (40, 220, 40)  # 状态色不同的副本
+    screen = make_background()
+    screen[20 : 44, 20 : 44] = green
+    screen[100 : 124, 100 : 124] = patch
+    results = match_template(png_bytes(screen), png_bytes(patch))
+    assert [(m.x, m.y) for m in results] == [(100, 100)]
+
+
 def test_low_texture_template_rejected():
     solid = np.full((20, 20, 3), 128, dtype=np.uint8)
     with pytest.raises(InvalidTemplate, match="标准差过低"):
