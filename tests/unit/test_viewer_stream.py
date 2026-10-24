@@ -24,6 +24,9 @@ class FakeChannel:
     def healthy(self):
         return self.started and not self.fail
 
+    def screen_size(self):
+        return 1080, 2400
+
     def latest_frame(self):
         if self.fail:
             raise StreamUnavailable("通道损坏")

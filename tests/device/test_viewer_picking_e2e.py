@@ -14,6 +14,12 @@ from mobile_auto.viewer.store import SnapshotStore
 
 @pytest.fixture
 def viewer(mobile_config):
+    import uiautomator2 as u2
+
+    device = u2.connect(mobile_config.device_serial)
+    if not device.info.get("screenOn"):  # 息屏时 u2 dump 会挂起
+        device.screen_on()
+        device.swipe(0.5, 0.9, 0.5, 0.2, duration=0.2)
     session = DeviceSession(mobile_config)
     session.start()
     session.release_lease()

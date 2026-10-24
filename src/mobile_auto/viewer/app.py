@@ -269,6 +269,7 @@ def _build_stream_frame(
             started = time.monotonic()
             try:
                 jpeg, width, height = channel.latest_frame()
+                screen_w, screen_h = channel.screen_size()
             except StreamUnavailable as exc:
                 manager.invalidate(str(exc))
             else:
@@ -278,6 +279,8 @@ def _build_stream_frame(
                     "captured_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
                     "width": width,
                     "height": height,
+                    "screen_width": screen_w,
+                    "screen_height": screen_h,
                     "decode_ms": round((time.monotonic() - started) * 1000, 1),
                     "jpeg_base64": base64.b64encode(jpeg).decode("ascii"),
                 }

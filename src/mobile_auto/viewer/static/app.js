@@ -6,8 +6,11 @@ const state = {
   snapshotId: null,
   consistent: false,
   treeNodes: [],
+  treeCapturedAt: null,
   pickedLocator: null, // {by, value, expression, risk}
   selectedNode: null,
+  deviceSpace: null, // {w, h}:流帧对应的设备像素空间(工单 05)
+  live: { active: false, paused: false, timer: null },
 };
 
 /* ── 状态与快照 ─────────────────────────────────────────── */
@@ -21,7 +24,8 @@ async function refreshStatus() {
   $("btn-snapshot").disabled = !status.capture.can_capture;
 }
 
-async function takeSnapshot() {
+/* mode="live":只刷新树与快照引用,不动实况画面流 */
+async function takeSnapshot(mode) {
   const res = await fetch("/api/v1/snapshots", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -34,14 +38,17 @@ async function takeSnapshot() {
   }
   state.snapshotId = data.snapshot_id;
   state.consistent = data.consistent === true && !data.tree_error;
-  $("tree-time").textContent = data.tree_captured_at ?? "";
+  state.treeCapturedAt = data.tree_captured_at;
+  $("tree-time").textContent = `${data.tree_captured_at ?? ""}${mode === "live" ? " · 实况" : ""}`;
   $("tree-meta").textContent = data.tree_error
     ? `UI 树不可用:${data.tree_error}(原生拾取禁用,图像定位不受影响)`
     : data.consistent
       ? `${data.width}x${data.height} · ${data.orientation} · 可拾取`
       : `${data.width}x${data.height} · 截图与树间隔超限,画面可能不一致,拾取已禁用;请重新采集`;
-  $("preview").src = `/api/v1/snapshots/${data.snapshot_id}/image`;
-  $("preview-time").textContent = data.captured_at;
+  if (mode !== "live") {
+    $("preview").src = `/api/v1/snapshots/${data.snapshot_id}/image`;
+    $("preview-time").textContent = data.captured_at;
+  }
   if (!data.tree_error) {
     const treeRes = await fetch(`/api/v1/snapshots/${data.snapshot_id}/tree`);
     if (treeRes.ok) {
@@ -52,7 +59,22 @@ async function takeSnapshot() {
     state.treeNodes = [];
     $("tree").textContent = "";
   }
-  clearOverlay();
+  if (mode !== "live") clearOverlay();
+}
+
+/* ── 实况树刷新(工单 05)───────────────────────────────── */
+
+const TREE_REFRESH_MS = 2000;
+const TREE_STALE_MS = 3000;
+
+function liveTick() {
+  if (!state.live.active || state.live.paused || imageTabActive()) return;
+  takeSnapshot("live");
+}
+
+function ensureLiveTimer() {
+  if (state.live.timer) return;
+  state.live.timer = setInterval(liveTick, TREE_REFRESH_MS);
 }
 
 /* ── UI 树与双向拾取 ─────────────────────────────────────── */
@@ -87,13 +109,17 @@ function drawBox(bounds, cls) {
   clearOverlay(cls);
   const img = $("preview");
   if (!img.naturalWidth) return;
-  const scale = img.clientWidth / img.naturalWidth;
+  // 边界是设备像素:按设备空间(流帧携带)换算;无流时回退图像自然宽度
+  const spaceW = state.deviceSpace ? state.deviceSpace.w : img.naturalWidth;
+  const spaceH = state.deviceSpace ? state.deviceSpace.h : img.naturalHeight;
+  const scaleX = MobileCoords.displayScale(img.clientWidth, spaceW);
+  const scaleY = MobileCoords.displayScale(img.clientHeight, spaceH);
   const box = document.createElement("div");
   box.className = cls || "highlight";
-  box.style.left = `${bounds[0] * scale}px`;
-  box.style.top = `${bounds[1] * scale}px`;
-  box.style.width = `${(bounds[2] - bounds[0]) * scale}px`;
-  box.style.height = `${(bounds[3] - bounds[1]) * scale}px`;
+  box.style.left = `${bounds[0] * scaleX}px`;
+  box.style.top = `${bounds[1] * scaleY}px`;
+  box.style.width = `${(bounds[2] - bounds[0]) * scaleX}px`;
+  box.style.height = `${(bounds[3] - bounds[1]) * scaleY}px`;
   $("overlay").appendChild(box);
 }
 
@@ -103,15 +129,16 @@ function clearOverlay(cls) {
   }
 }
 
-/* 浏览器缩放/留白:CSS 坐标 → 截图像素(按 naturalWidth/clientWidth 比例换算) */
+/* 浏览器缩放/留白:CSS 坐标 → 设备像素(流帧携带设备空间;回退自然宽高) */
 function toPixelCoords(event) {
   const img = $("preview");
   const rect = img.getBoundingClientRect();
-  const scale = img.naturalWidth / rect.width;
-  return {
-    x: Math.round((event.clientX - rect.left) * scale),
-    y: Math.round((event.clientY - rect.top) * scale),
-  };
+  return MobileCoords.eventToPixel(
+    event,
+    rect,
+    state.deviceSpace ? state.deviceSpace.w : img.naturalWidth,
+    state.deviceSpace ? state.deviceSpace.h : img.naturalHeight,
+  );
 }
 
 async function pickAt(event) {
@@ -125,6 +152,13 @@ async function pickAt(event) {
     return;
   }
   const { x, y } = toPixelCoords(event);
+  if (
+    state.live.active &&
+    MobileCoords.isStale(state.treeCapturedAt, Date.now(), TREE_STALE_MS)
+  ) {
+    $("pick-hint").textContent = "UI 树可能滞后(>3s),已触发实况刷新;";
+    liveTick();
+  }
   const res = await fetch("/api/v1/pick", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -317,9 +351,17 @@ function connectPreview() {
         );
         setPauseMask(false);
       }
+      // 实况模式(工单 05):流帧到达即激活;帧携带设备像素空间
+      state.deviceSpace = frame.screen_width
+        ? { w: frame.screen_width, h: frame.screen_height }
+        : state.deviceSpace;
+      state.live.active = true;
+      state.live.paused = false;
+      ensureLiveTimer();
       $("preview-message").textContent = "";
     } else if (frame.kind === "status" && frame.busy) {
-      // 租约被他人持有:保留末帧 + 遮罩,不冒充实时
+      // 租约被他人持有:保留末帧 + 遮罩,不冒充实时;实况树同步暂停
+      state.live.paused = true;
       setPauseMask(true, frame.message);
     } else {
       $("preview-message").textContent = frame.message || "预览暂不可用";
@@ -365,14 +407,16 @@ function setupMarquee() {
     const now = toPixelCoords(event);
     const box = document.getElementById("marquee");
     if (!box) return;
-    const imgRect = img.getBoundingClientRect();
-    const scale = img.clientWidth / img.naturalWidth;
+    const spaceW = state.deviceSpace ? state.deviceSpace.w : img.naturalWidth;
+    const spaceH = state.deviceSpace ? state.deviceSpace.h : img.naturalHeight;
+    const scaleX = MobileCoords.displayScale(img.clientWidth, spaceW);
+    const scaleY = MobileCoords.displayScale(img.clientHeight, spaceH);
     const x0 = Math.min(start.x, now.x), y0 = Math.min(start.y, now.y);
     const x1 = Math.max(start.x, now.x), y1 = Math.max(start.y, now.y);
-    box.style.left = `${imgRect.left - imgRect.left + (x0 * scale)}px`;
-    box.style.top = `${(y0 * scale)}px`;
-    box.style.width = `${(x1 - x0) * scale}px`;
-    box.style.height = `${(y1 - y0) * scale}px`;
+    box.style.left = `${x0 * scaleX}px`;
+    box.style.top = `${y0 * scaleY}px`;
+    box.style.width = `${(x1 - x0) * scaleX}px`;
+    box.style.height = `${(y1 - y0) * scaleY}px`;
   });
   window.addEventListener("mouseup", (event) => {
     if (!start) return;
