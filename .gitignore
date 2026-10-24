@@ -28,3 +28,15 @@ tests/device/local.toml
 # 测试运行产物(证据/资产/锁文件,运行时生成)
 tests/device/artifacts/
 tests/device/assets/
+
+# ── 文档与过程内容(本地保留,不入库;2026-10-24 抽离干净版本)──
+# 项目过程管理:PRD 复审计划、spec、工单追踪与调试快照
+/.scratch/
+# 移交与说明文档:接入指南、离线清单、验证记录、演示 App 登记、PRD、agent 约定
+/docs/
+# agent 工程配置与术语表
+/CLAUDE.md
+/GLOSSARY.md
+
+# ── 运行产物(根目录 assets 为调试时残留的模板资产库)──
+/assets/
