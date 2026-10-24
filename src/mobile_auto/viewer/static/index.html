@@ -9,28 +9,32 @@
 <body>
   <header>
     <span id="service">mobile-auto viewer</span>
+    <select id="device-select" title="选择设备"><option value="">默认设备</option></select>
     <span id="device-state">设备:检测中…</span>
     <span id="lease-state"></span>
-    <span id="freshness"></span>
-    <button id="btn-snapshot" type="button">采集快照(含 UI 树)</button>
+    <span class="spacer"></span>
+    <button id="btn-inspect" type="button" title="冻结当前画面并采集 UI 树,进入检查模式">采集检查</button>
+    <button id="btn-live" type="button" class="hidden" title="解除冻结,恢复实时画面">恢复实时</button>
+    <label id="control-label"><input id="control-toggle" type="checkbox" /> 直接控制</label>
+    <button id="btn-key-back" type="button" disabled>返回</button>
+    <button id="btn-key-home" type="button" disabled>主屏</button>
+    <button id="btn-wake" type="button" disabled>亮屏</button>
+    <span id="control-note"></span>
   </header>
   <main>
     <section id="preview-pane">
-      <h2>画面 <small id="preview-time"></small></h2>
+      <div id="screen-head">
+        <span id="mode-badge">实时</span>
+        <span id="freshness"></span>
+        <span id="preview-time"></span>
+      </div>
       <div id="stage">
         <img id="preview" alt="设备画面" />
         <div id="overlay"></div>
-        <div id="pause-mask" class="hidden"><span>画面已暂停</span><small id="pause-reason"></small></div>
+        <span id="stale-badge" class="hidden">画面滞后</span>
       </div>
-      <p id="preview-message">点击画面拾取控件;点击树节点显示边界框。</p>
       <p id="stream-notice" class="hidden"></p>
-      <div id="control-bar">
-        <label><input id="control-toggle" type="checkbox" /> 直接控制</label>
-        <button id="btn-key-back" type="button" disabled>返回</button>
-        <button id="btn-key-home" type="button" disabled>主屏</button>
-        <button id="btn-wake" type="button" disabled>亮屏</button>
-        <span id="control-note"></span>
-      </div>
+      <p id="preview-message">实时模式:测试运行中画面不中断。点「采集检查」冻结画面与 UI 树进行拾取。</p>
     </section>
     <section id="inspect-pane">
       <nav class="tabs">
@@ -38,26 +42,23 @@
         <button class="tab" data-tab="image" type="button">图像</button>
       </nav>
       <div id="tab-native">
-        <h2>UI 树 <small id="tree-time"></small></h2>
-        <p id="tree-meta">采集快照后显示。UI 树不可用时原生拾取禁用,图像定位不受影响。</p>
-        <ul id="tree"></ul>
-        <div id="candidates">
-          <h2>拾取候选 <small id="pick-point"></small></h2>
-          <p id="pick-hint">点击画面后此处列出候选;重叠时请自行选择。</p>
-          <ul id="candidate-list"></ul>
-          <div id="validate-box">
-            <button id="btn-validate" type="button" disabled>验证选中定位</button>
-            <span id="validate-note"></span>
-          </div>
-          <div id="expression-box">
-            <code id="expression"></code>
-            <button id="btn-copy" type="button" disabled>复制表达式</button>
-          </div>
+        <h2>元素信息 <small id="pick-point"></small></h2>
+        <table id="attr-table"><tbody></tbody></table>
+        <h2>定位候选 <small>重叠时自行选择</small></h2>
+        <ul id="candidate-list"><li class="empty">点击画面或树节点后列出候选。</li></ul>
+        <div id="validate-box">
+          <button id="btn-validate" type="button" disabled>验证选中定位</button>
+          <span id="validate-note"></span>
+        </div>
+        <div id="expression-box">
+          <code id="expression"></code>
+          <button id="btn-copy" type="button" disabled>复制表达式</button>
         </div>
       </div>
       <div id="tab-image" class="hidden">
-        <h2>图像模板 <small>先采集快照,再在画面上框选</small></h2>
-        <p id="image-hint">在画面上按住拖动框选目标区域。</p>
+        <h2>图像模板 <small>检查模式下框选区域</small></h2>
+        <p id="image-hint">先「采集检查」冻结画面,再在画面上按住拖动框选目标。</p>
+        <table id="region-table"><tbody></tbody></table>
         <div id="image-fields">
           <label>模板名 <input id="tpl-name" type="text" placeholder="demo/target.png" /></label>
           <label>阈值 <input id="tpl-confidence" type="number" min="0.1" max="1" step="0.01" value="0.90" /></label>
@@ -72,6 +73,12 @@
           <button id="btn-image-copy" type="button" disabled>复制 IMAGE 定位</button>
         </div>
       </div>
+    </section>
+    <section id="tree-pane">
+      <h2>UI 层级树 <small id="tree-time"></small></h2>
+      <input id="tree-filter" type="text" placeholder="搜索:text/resource-id/class…" />
+      <p id="tree-meta">「采集检查」后显示;点击树节点联动选中。</p>
+      <ul id="tree"></ul>
     </section>
   </main>
   <script src="/coords.js"></script>

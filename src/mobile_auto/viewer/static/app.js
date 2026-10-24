@@ -1,32 +1,89 @@
-/* mobile-auto 查看器:实时预览、双向拾取与定位验证;仅观察,不控制设备。 */
+/* mobile-auto 查看器:多设备实时预览、冻结检查(控件/图像)与定位验证。 */
 "use strict";
 
 const $ = (id) => document.getElementById(id);
 const state = {
+  device: "", // "" = 服务端配置的默认设备
+  view: "live", // "live" 实时流 | "inspect" 冻结检查
   snapshotId: null,
   consistent: false,
   treeNodes: [],
   treeCapturedAt: null,
+  deviceSpace: null, // {w, h}:当前画面(流帧或快照)的设备像素空间
   pickedLocator: null, // {by, value, expression, risk}
-  selectedNode: null,
-  deviceSpace: null, // {w, h}:流帧对应的设备像素空间(工单 05)
-  live: { active: false, paused: false, timer: null },
+  hoverNodeIndex: null,
+  lastFrameAt: 0,
 };
 
-/* ── 状态与快照 ─────────────────────────────────────────── */
+const qs = () => (state.device ? `?device=${encodeURIComponent(state.device)}` : "");
+
+/* ── 状态与设备 ─────────────────────────────────────────── */
 
 async function refreshStatus() {
-  const res = await fetch("/api/v1/status");
+  const res = await fetch(`/api/v1/status${qs()}`);
   const status = await res.json();
   $("service").textContent = `mobile-auto viewer v${status.service_version}`;
-  $("device-state").textContent = `设备 ${status.device.serial ?? "未连接"} · ${status.device.state}`;
-  $("lease-state").textContent = status.device.busy ? "占用中(测试进行时网页暂停采集)" : "空闲";
-  $("btn-snapshot").disabled = !status.capture.can_capture;
+  const d = status.device ?? {};
+  $("device-state").textContent = `设备 ${d.serial ?? "未连接"} · ${d.state ?? "未知"}`;
+  $("lease-state").textContent = d.busy ? "占用中(测试运行,只读观察不受影响)" : "空闲";
+  $("btn-inspect").disabled = !status.capture.can_capture;
+  populateDevices(status.devices ?? []);
 }
 
-/* mode="live":只刷新树与快照引用,不动实况画面流 */
-async function takeSnapshot(mode) {
-  const res = await fetch("/api/v1/snapshots", {
+function populateDevices(devices) {
+  const select = $("device-select");
+  const current = state.device;
+  select.textContent = "";
+  const defaultDev = devices.find((d) => d.default);
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = defaultDev ? `默认设备 ${defaultDev.serial}` : "默认设备";
+  select.appendChild(option);
+  for (const d of devices) {
+    if (d.default) continue;
+    const opt = document.createElement("option");
+    opt.value = d.serial;
+    const mark = { device: "", connected: "·已连", unauthorized: "·未授权", offline: "·离线" }[d.state] ?? "";
+    opt.textContent = `${d.serial}${mark}`;
+    select.appendChild(opt);
+  }
+  select.value = devices.some((d) => d.serial === current) || !current ? current : "";
+}
+
+async function switchDevice(serial) {
+  state.device = serial;
+  state.snapshotId = null;
+  state.treeNodes = [];
+  state.treeCapturedAt = null;
+  state.pickedLocator = null;
+  state.deviceSpace = null;
+  $("tree").textContent = "";
+  $("tree-time").textContent = "";
+  $("tree-meta").textContent = "「采集检查」后显示;点击树节点联动选中。";
+  renderCandidates([]);
+  fillAttrTable(null);
+  closePreviewSocket();
+  setView("live");
+  refreshStatus();
+}
+
+/* ── 视图状态:实时 / 检查 ─────────────────────────────── */
+
+function setView(view) {
+  state.view = view;
+  const badge = $("mode-badge");
+  badge.textContent = view === "live" ? "实时" : "检查(冻结)";
+  badge.classList.toggle("inspect", view === "inspect");
+  $("btn-live").classList.toggle("hidden", view !== "inspect");
+  $("stale-badge").classList.add("hidden");
+  if (view === "live") {
+    clearOverlay();
+    state.snapshotId = null;
+  }
+}
+
+async function inspectCapture() {
+  const res = await fetch(`/api/v1/snapshots${qs()}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ with_tree: true }),
@@ -39,77 +96,78 @@ async function takeSnapshot(mode) {
   state.snapshotId = data.snapshot_id;
   state.consistent = data.consistent === true && !data.tree_error;
   state.treeCapturedAt = data.tree_captured_at;
-  $("tree-time").textContent = `${data.tree_captured_at ?? ""}${mode === "live" ? " · 实况" : ""}`;
+  state.deviceSpace = { w: data.width, h: data.height };
+  setView("inspect");
+  $("preview").src = `/api/v1/snapshots/${data.snapshot_id}/image`;
+  $("preview-time").textContent = `冻结于 ${data.captured_at}`;
+  $("tree-time").textContent = data.tree_captured_at ?? "";
   $("tree-meta").textContent = data.tree_error
     ? `UI 树不可用:${data.tree_error}(原生拾取禁用,图像定位不受影响)`
     : data.consistent
       ? `${data.width}x${data.height} · ${data.orientation} · 可拾取`
       : `${data.width}x${data.height} · 截图与树间隔超限,画面可能不一致,拾取已禁用;请重新采集`;
-  if (mode !== "live") {
-    $("preview").src = `/api/v1/snapshots/${data.snapshot_id}/image`;
-    $("preview-time").textContent = data.captured_at;
-  }
   if (!data.tree_error) {
     const treeRes = await fetch(`/api/v1/snapshots/${data.snapshot_id}/tree`);
     if (treeRes.ok) {
       state.treeNodes = (await treeRes.json()).nodes;
-      renderTree();
+      renderTree($("tree-filter").value);
     }
   } else {
     state.treeNodes = [];
     $("tree").textContent = "";
   }
-  if (mode !== "live") clearOverlay();
-}
-
-/* ── 实况树刷新(工单 05)───────────────────────────────── */
-
-const TREE_REFRESH_MS = 2000;
-const TREE_STALE_MS = 3000;
-
-function liveTick() {
-  if (!state.live.active || state.live.paused || imageTabActive()) return;
-  takeSnapshot("live");
-}
-
-function ensureLiveTimer() {
-  if (state.live.timer) return;
-  state.live.timer = setInterval(liveTick, TREE_REFRESH_MS);
+  clearOverlay();
+  renderCandidates([]);
 }
 
 /* ── UI 树与双向拾取 ─────────────────────────────────────── */
 
-function renderTree() {
+function nodeLabel(node) {
+  return (
+    [node.class_name.split(".").pop(), node.resource_id, node.text, node.content_desc]
+      .filter(Boolean)
+      .join(" · ") + (node.bounds ? `  [${node.bounds.join(",")}]` : "")
+  );
+}
+
+function renderTree(filter) {
   const ul = $("tree");
   ul.textContent = "";
+  const needle = (filter || "").trim().toLowerCase();
   for (const node of state.treeNodes) {
     if (!node.text && !node.resource_id && !node.content_desc) continue;
+    if (needle && !nodeLabel(node).toLowerCase().includes(needle)) continue;
     const li = document.createElement("li");
     li.className = node.clickable ? "clickable" : "";
     li.dataset.index = node.index;
-    li.textContent =
-      [node.class_name.split(".").pop(), node.resource_id, node.text, node.content_desc]
-        .filter(Boolean)
-        .join(" · ") + (node.bounds ? `  [${node.bounds.join(",")}]` : "");
-    li.addEventListener("click", () => {
-      highlightNode(node);
-      drawBox(node.bounds, "tree-box");
-    });
+    li.title = nodeLabel(node);
+    li.textContent = nodeLabel(node);
+    li.addEventListener("click", () => onTreeNodeClick(node));
     ul.appendChild(li);
   }
 }
 
 function highlightNode(node) {
   for (const li of $("tree").children) {
-    li.classList.toggle("selected", li.dataset.index == node.index);
+    li.classList.toggle("selected", node && li.dataset.index == node.index);
   }
 }
 
+async function onTreeNodeClick(node) {
+  highlightNode(node);
+  if (node.bounds) drawBox(node.bounds, "tree-box");
+  fillAttrTable(node);
+  if (!node.bounds || !state.consistent) return;
+  // 命中点取节点中心:复用服务端候选生成(与驱动同一套定位规则)
+  const cx = Math.floor((node.bounds[0] + node.bounds[2]) / 2);
+  const cy = Math.floor((node.bounds[1] + node.bounds[3]) / 2);
+  await pickAtPoint(cx, cy);
+}
+
 function drawBox(bounds, cls) {
-  clearOverlay(cls);
+  clearOverlay(cls === "hover-box" ? null : cls);
   const img = $("preview");
-  if (!img.naturalWidth) return;
-  // 边界是设备像素:按设备空间(流帧携带)换算;无流时回退图像自然宽度
+  if (!img.naturalWidth || !bounds) return;
   const spaceW = state.deviceSpace ? state.deviceSpace.w : img.naturalWidth;
   const spaceH = state.deviceSpace ? state.deviceSpace.h : img.naturalHeight;
   const scaleX = MobileCoords.displayScale(img.clientWidth, spaceW);
@@ -129,7 +187,7 @@ function clearOverlay(cls) {
   }
 }
 
-/* 浏览器缩放/留白:CSS 坐标 → 设备像素(流帧携带设备空间;回退自然宽高) */
+/* 浏览器缩放/留白:CSS 坐标 → 设备像素(快照或流帧的设备空间) */
 function toPixelCoords(event) {
   const img = $("preview");
   const rect = img.getBoundingClientRect();
@@ -142,36 +200,84 @@ function toPixelCoords(event) {
 }
 
 async function pickAt(event) {
-  if (control.enabled) return; // 控制模式:画面点击是注入,不是拾取
+  if (control.enabled || state.view !== "inspect") return;
+  if (!imageGuard()) return;
+  const { x, y } = toPixelCoords(event);
+  await pickAtPoint(x, y, event);
+}
+
+function imageGuard() {
+  if (imageTabActive()) return false; // 图像模式:画面拖动是框选
   if (!state.snapshotId) {
-    $("pick-hint").textContent = "请先采集快照。";
-    return;
+    $("tree-meta").textContent = "请先「采集检查」冻结画面。";
+    return false;
   }
   if (!state.consistent) {
-    $("pick-hint").textContent = "快照不一致或无 UI 树,拾取已禁用;请重新采集。";
-    return;
+    $("tree-meta").textContent = "快照不一致或无 UI 树,拾取已禁用;请重新采集。";
+    return false;
   }
-  const { x, y } = toPixelCoords(event);
-  if (
-    state.live.active &&
-    MobileCoords.isStale(state.treeCapturedAt, Date.now(), TREE_STALE_MS)
-  ) {
-    $("pick-hint").textContent = "UI 树可能滞后(>3s),已触发实况刷新;";
-    liveTick();
-  }
-  const res = await fetch("/api/v1/pick", {
+  return true;
+}
+
+async function pickAtPoint(x, y, event) {
+  if (!state.snapshotId || !state.consistent) return;
+  const res = await fetch(`/api/v1/pick`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ snapshot_id: state.snapshotId, x, y }),
   });
   const data = await res.json();
   if (!res.ok) {
-    $("pick-hint").textContent =
-      res.status === 404 ? "快照已过期,请重新采集后再拾取。" : `拾取失败(${data.code}):${data.message}`;
+    $("pick-point").textContent =
+      res.status === 404 ? "快照已过期,请重新采集" : `拾取失败(${data.code})`;
     return;
   }
-  $("pick-point").textContent = `@ (${x}, ${y})${data.overlap ? " · 存在重叠,请选择" : ""}`;
+  const img = $("preview");
+  const pctX = event ? ((event.clientX - img.getBoundingClientRect().left) / img.clientWidth * 100).toFixed(1) : null;
+  const pctY = event ? ((event.clientY - img.getBoundingClientRect().top) / img.clientHeight * 100).toFixed(1) : null;
+  const pctText = pctX !== null ? ` · 点击 (${pctX}%, ${pctY}%)` : "";
+  $("pick-point").textContent = `@ (${x}, ${y})${pctText}${data.overlap ? " · 存在重叠,请选择" : ""}`;
   renderCandidates(data.candidates);
+  if (data.candidates.length) fillAttrTable(data.candidates[0]);
+}
+
+/* ── 元素信息面板(检查栏)──────────────────────────────── */
+
+function fillAttrTable(node) {
+  const tbody = $("attr-table").querySelector("tbody");
+  tbody.textContent = "";
+  if (!node) return;
+  const bounds = node.bounds;
+  const rows = [
+    ["class", node.class_name],
+    ["resource-id", node.resource_id],
+    ["text", node.text],
+    ["content-desc", node.content_desc],
+    ["clickable", node.clickable === true ? "true" : node.clickable === false ? "false" : ""],
+    ["bounds", bounds ? bounds.join(", ") : ""],
+  ];
+  for (const [key, value] of rows) {
+    if (value === undefined || value === null || value === "") continue;
+    const tr = document.createElement("tr");
+    const tdKey = document.createElement("td");
+    tdKey.textContent = key;
+    const tdVal = document.createElement("td");
+    tdVal.textContent = String(value);
+    if (String(value).length > 6) {
+      const btn = document.createElement("button");
+      btn.className = "attr-copy";
+      btn.type = "button";
+      btn.textContent = "复制";
+      btn.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(String(value));
+        btn.textContent = "已复制";
+        setTimeout(() => (btn.textContent = "复制"), 1200);
+      });
+      tdVal.appendChild(btn);
+    }
+    tr.append(tdKey, tdVal);
+    tbody.appendChild(tr);
+  }
 }
 
 function renderCandidates(nodeCandidates) {
@@ -182,6 +288,13 @@ function renderCandidates(nodeCandidates) {
   $("btn-copy").disabled = true;
   $("expression").textContent = "";
   $("validate-note").textContent = "";
+  if (!nodeCandidates.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "点击画面或树节点后列出候选。";
+    ul.appendChild(li);
+    return;
+  }
   for (const node of nodeCandidates) {
     for (const loc of node.locators) {
       const li = document.createElement("li");
@@ -190,11 +303,6 @@ function renderCandidates(nodeCandidates) {
       li.addEventListener("click", () => selectCandidate(li, loc, node));
       ul.appendChild(li);
     }
-  }
-  if (!nodeCandidates.length) {
-    const li = document.createElement("li");
-    li.textContent = "该点未命中任何节点。";
-    ul.appendChild(li);
   }
 }
 
@@ -212,12 +320,50 @@ function selectCandidate(li, loc, node) {
   if (hit) highlightNode(hit);
 }
 
+/* ── 悬停命中(ui-viewer 式):最小包含节点虚线框 ────────── */
+
+function hitTest(x, y) {
+  let best = null;
+  let bestArea = Infinity;
+  for (const node of state.treeNodes) {
+    const b = node.bounds;
+    if (!b) continue;
+    if (b[0] <= x && x < b[2] && b[1] <= y && y < b[3]) {
+      const area = (b[2] - b[0]) * (b[3] - b[1]);
+      if (area < bestArea) {
+        best = node;
+        bestArea = area;
+      }
+    }
+  }
+  return best;
+}
+
+function setupHover() {
+  const img = $("preview");
+  img.addEventListener("mousemove", (event) => {
+    if (control.enabled || state.view !== "inspect" || !state.consistent || imageTabActive()) return;
+    const { x, y } = toPixelCoords(event);
+    const node = hitTest(x, y);
+    if ((node?.index ?? null) === state.hoverNodeIndex) return;
+    state.hoverNodeIndex = node?.index ?? null;
+    for (const box of [...$("overlay").children]) {
+      if (box.className === "hover-box") box.remove();
+    }
+    if (node) drawBox(node.bounds, "hover-box");
+  });
+  img.addEventListener("mouseleave", () => {
+    state.hoverNodeIndex = null;
+    clearOverlay("hover-box");
+  });
+}
+
 /* ── 定位验证 ────────────────────────────────────────────── */
 
 async function validatePicked() {
   if (!state.pickedLocator) return;
   $("validate-note").textContent = "验证中(重新采集查询)…";
-  const res = await fetch("/api/v1/locators/validate", {
+  const res = await fetch(`/api/v1/locators/validate${qs()}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ target: state.pickedLocator.target }),
@@ -233,7 +379,7 @@ async function validatePicked() {
   $("validate-note").textContent = `匹配 ${data.count} 个 · ${data.note}`;
 }
 
-/* ── 直接控制(工单 04)────────────────────────────────── */
+/* ── 直接控制(仅实时视图)────────────────────────────── */
 
 const control = { enabled: false, dragStart: null };
 
@@ -262,15 +408,16 @@ async function setControlMode(enabled) {
   for (const id of ["btn-key-back", "btn-key-home", "btn-wake"]) {
     $(id).disabled = !enabled;
   }
+  if (enabled) setView("live"); // 注入按实时画面坐标计算,控制只能在实时视图
   $("control-note").textContent = enabled
-    ? "控制中:点击画面=单击,拖动=滑动;拾取已暂停"
+    ? "控制中:点击画面=单击,拖动=滑动"
     : "";
 }
 
 async function inject(path, body) {
   if (!control.enabled) return;
   try {
-    await apiPost(path, body);
+    await apiPost(path + qs(), body || {});
   } catch (err) {
     $("control-note").textContent = `注入失败 ${err.message}`;
   }
@@ -294,12 +441,12 @@ function setupControl() {
 
   const img = $("preview");
   img.addEventListener("mousedown", (event) => {
-    if (!control.enabled) return;
+    if (!control.enabled || state.view !== "live") return;
     control.dragStart = { ...normCoords(event), at: performance.now(), clientX: event.clientX, clientY: event.clientY };
     event.preventDefault();
   });
   window.addEventListener("mouseup", (event) => {
-    if (!control.enabled || !control.dragStart) return;
+    if (!control.enabled || !control.dragStart || state.view !== "live") return;
     const start = control.dragStart;
     control.dragStart = null;
     const end = normCoords(event);
@@ -317,6 +464,10 @@ function setupControl() {
 
 /* ── 标签页 ──────────────────────────────────────────────── */
 
+function imageTabActive() {
+  return document.querySelector(".tab.active").dataset.tab === "image";
+}
+
 function setupTabs() {
   for (const btn of document.querySelectorAll(".tab")) {
     btn.addEventListener("click", () => {
@@ -328,46 +479,57 @@ function setupTabs() {
   }
 }
 
-/* ── 预览 WS ─────────────────────────────────────────────── */
+/* ── 预览 WS(实时流;设备寻址;状态用提示行呈现,不遮画面)── */
+
+let previewSocket = null;
+
+function closePreviewSocket() {
+  if (previewSocket) {
+    const ws = previewSocket;
+    previewSocket = null;
+    ws.onclose = null;
+    ws.close();
+  }
+}
 
 function connectPreview() {
+  if (previewSocket) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/api/v1/preview`);
+  const ws = new WebSocket(`${proto}://${location.host}/api/v1/preview${qs()}`);
+  previewSocket = ws;
   ws.onmessage = (event) => {
     const frame = JSON.parse(event.data);
     $("freshness").textContent = `帧时间 ${frame.captured_at}`;
     if (frame.kind === "frame") {
-      if (frame.source === "scrcpy") {
-        $("preview").src = `data:image/jpeg;base64,${frame.jpeg_base64}`;
-        $("preview-time").textContent = `${frame.captured_at} · ${frame.width}x${frame.height}`;
-        setStreamNotice("");
-        setPauseMask(false);
-      } else {
-        // u2 截图回退:画面节奏回到 1s 档,如实提示原因
-        $("preview").src = `data:image/jpeg;base64,${frame.jpeg_base64}`;
-        $("preview-time").textContent = frame.captured_at;
-        setStreamNotice(
-          `视频流不可用,已回退截图轮询${frame.fallback_reason ? ":" + frame.fallback_reason : ""}`,
-        );
-        setPauseMask(false);
+      state.lastFrameAt = performance.now();
+      if (frame.screen_width) {
+        // 检查冻结期间不覆盖快照的设备空间
+        if (state.view === "live" || !state.deviceSpace) {
+          state.deviceSpace = { w: frame.screen_width, h: frame.screen_height };
+        }
       }
-      // 实况模式(工单 05):流帧到达即激活;帧携带设备像素空间
-      state.deviceSpace = frame.screen_width
-        ? { w: frame.screen_width, h: frame.screen_height }
-        : state.deviceSpace;
-      state.live.active = true;
-      state.live.paused = false;
-      ensureLiveTimer();
-      $("preview-message").textContent = "";
-    } else if (frame.kind === "status" && frame.busy) {
-      // 租约被他人持有:保留末帧 + 遮罩,不冒充实时;实况树同步暂停
-      state.live.paused = true;
-      setPauseMask(true, frame.message);
+      if (state.view === "live") {
+        $("preview").src = `data:image/jpeg;base64,${frame.jpeg_base64}`;
+        $("preview-time").textContent =
+          frame.source === "scrcpy"
+            ? `${frame.captured_at} · ${frame.width}x${frame.height}`
+            : frame.captured_at;
+        setStreamNotice(
+          frame.source === "scrcpy"
+            ? ""
+            : `视频流不可用,截图轮询中${frame.fallback_reason ? ":" + frame.fallback_reason : ""}`,
+        );
+      }
+    } else if (frame.kind === "status") {
+      setStreamNotice(frame.message || "预览暂不可用");
     } else {
-      $("preview-message").textContent = frame.message || "预览暂不可用";
+      setStreamNotice(frame.message || "预览暂不可用");
     }
   };
-  ws.onclose = () => setTimeout(connectPreview, 2000);
+  ws.onclose = () => {
+    if (previewSocket === ws) previewSocket = null;
+    setTimeout(connectPreview, 2000);
+  };
 }
 
 function setStreamNotice(text) {
@@ -376,26 +538,43 @@ function setStreamNotice(text) {
   el.classList.toggle("hidden", !text);
 }
 
-function setPauseMask(paused, reason) {
-  const mask = $("pause-mask");
-  mask.classList.toggle("hidden", !paused);
-  if (paused) $("pause-reason").textContent = reason || "";
-}
+/* 滞后角标:实时视图下 >3s 无新帧提示(不遮画面) */
+setInterval(() => {
+  const stale = state.view === "live" && performance.now() - state.lastFrameAt > 3000;
+  $("stale-badge").classList.toggle("hidden", !stale);
+}, 1000);
 
-/* ── 图像模板制作(工单 11)──────────────────────────────── */
+/* ── 图像模板制作(检查模式框选)────────────────────────── */
 
 const imageState = { region: null, logical: null, sha256: null };
 
-function imageTabActive() {
-  return document.querySelector(".tab.active").dataset.tab === "image";
+function renderRegionTable(region) {
+  const tbody = $("region-table").querySelector("tbody");
+  tbody.textContent = "";
+  if (!region) return;
+  const [x, y, w, h] = region;
+  const space = state.deviceSpace ?? { w: 0, h: 0 };
+  const rows = [
+    ["region (x,y,w,h)", region.join(", ")],
+    ["百分比", `${((w / 2 + x) / (space.w || 1) * 100).toFixed(1)}%, ${((h / 2 + y) / (space.h || 1) * 100).toFixed(1)}%(中心)`],
+  ];
+  for (const [key, value] of rows) {
+    const tr = document.createElement("tr");
+    const tdKey = document.createElement("td");
+    tdKey.textContent = key;
+    const tdVal = document.createElement("td");
+    tdVal.textContent = String(value);
+    tr.append(tdKey, tdVal);
+    tbody.appendChild(tr);
+  }
 }
 
 function setupMarquee() {
   const img = $("preview");
   let start = null;
   img.addEventListener("mousedown", (event) => {
-    if (control.enabled) return; // 控制模式互斥:不进入模板框选
-    if (!imageTabActive() || !state.snapshotId) return;
+    if (control.enabled) return;
+    if (!imageTabActive() || state.view !== "inspect" || !state.snapshotId) return;
     start = toPixelCoords(event);
     const box = document.createElement("div");
     box.id = "marquee";
@@ -431,7 +610,8 @@ function setupMarquee() {
     start = null;
     if (region[2] < 4 || region[3] < 4) return; // 忽略误点
     imageState.region = region;
-    $("image-hint").textContent = `已框选 (${region.join(", ")});填写模板名后保存。`;
+    renderRegionTable(region);
+    $("image-hint").textContent = "已框选;填写模板名后保存。";
     $("btn-tpl-save").disabled = false;
     drawBox(region, "match-box");
   });
@@ -446,22 +626,21 @@ async function saveTemplate() {
     region: imageState.region,
     note: "viewer-made",
   };
-  const res = await fetch("/api/v1/templates", {
+  const res = await fetch(`/api/v1/templates${qs()}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const data = await res.json();
   if (res.status === 409) {
-    // 同名存在:请求旧摘要走确认更新
-    const listRes = await fetch("/api/v1/templates");
+    const listRes = await fetch(`/api/v1/templates${qs()}`);
     const known = (await listRes.json()).templates.find((t) => t.logical === logical);
     if (!known) { $("tpl-result").textContent = `保存失败(${data.code}):${data.message}`; return; }
     if (!confirm(`模板 ${logical} 已存在,基于旧版本确认更新?`)) {
       $("tpl-result").textContent = "已取消更新。";
       return;
     }
-    const upRes = await fetch(`/api/v1/templates/${encodeURIComponent(logical)}`, {
+    const upRes = await fetch(`/api/v1/templates/${encodeURIComponent(logical)}${qs()}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...body, expected_old_sha256: known.image_sha256 }),
@@ -483,7 +662,6 @@ async function saveTemplate() {
 
 function setImageExpression() {
   const confidence = parseFloat($("tpl-confidence").value);
-  const parts = [`" ${imageState.logical}"`.replace('" ', '"')];
   let expr = `Target(Locator.IMAGE, ${JSON.stringify(imageState.logical)}`;
   if (Number.isFinite(confidence) && confidence !== 0.90) {
     expr += `, confidence=${confidence}`;
@@ -504,7 +682,7 @@ async function validateTemplate() {
   if (Number.isFinite(confidence)) target.confidence = confidence;
   if (imageState.region) target.region = imageState.region;
   $("tpl-result").textContent = "重新匹配中(新截图)…";
-  const res = await fetch("/api/v1/templates/validate", {
+  const res = await fetch(`/api/v1/templates/validate${qs()}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ target }),
@@ -520,7 +698,12 @@ async function validateTemplate() {
   $("tpl-result").textContent = `匹配 ${data.count} 个 · ${data.note}.${scoreText}`;
 }
 
-$("btn-snapshot").addEventListener("click", takeSnapshot);
+/* ── 装配 ────────────────────────────────────────────────── */
+
+$("btn-inspect").addEventListener("click", inspectCapture);
+$("btn-live").addEventListener("click", () => setView("live"));
+$("device-select").addEventListener("change", (event) => switchDevice(event.target.value));
+$("tree-filter").addEventListener("input", (event) => renderTree(event.target.value));
 $("btn-tpl-save").addEventListener("click", saveTemplate);
 $("btn-tpl-validate").addEventListener("click", validateTemplate);
 $("btn-image-copy").addEventListener("click", async () => {
@@ -533,6 +716,7 @@ $("tpl-confidence").addEventListener("change", () => {
 });
 setupMarquee();
 setupControl();
+setupHover();
 $("btn-validate").addEventListener("click", validatePicked);
 $("btn-copy").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("expression").textContent);

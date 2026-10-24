@@ -1,66 +1,91 @@
 :root { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 body { margin: 0; background: #14171c; color: #e6e9ee; }
 header {
-  display: flex; gap: 16px; align-items: center;
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
   padding: 8px 16px; background: #1d222b; border-bottom: 1px solid #2a313d;
 }
-header span { font-size: 14px; }
-#service { font-weight: 600; }
+header span { font-size: 13px; }
+#service { font-weight: 600; font-size: 15px; }
+.spacer { flex: 1; }
 button {
   background: #2f6fed; color: white; border: 0; border-radius: 6px;
-  padding: 6px 14px; cursor: pointer;
+  padding: 6px 14px; cursor: pointer; font-size: 13px;
 }
-main { display: grid; grid-template-columns: minmax(360px, 45%) 1fr; gap: 12px; padding: 12px; }
-section { background: #1d222b; border: 1px solid #2a313d; border-radius: 8px; padding: 10px; }
-h2 { margin: 0 0 8px; font-size: 15px; }
-h2 small { color: #8b94a3; font-weight: 400; }
-#preview { width: 100%; border: 1px solid #2a313d; background: #000; min-height: 200px; }
-#preview-message { color: #f0b429; font-size: 13px; min-height: 1em; }
-#tree { list-style: none; margin: 0; padding: 0; font-size: 12px; max-height: 70vh; overflow: auto; }
-#tree li { padding: 2px 6px; border-bottom: 1px solid #232a35; cursor: default; }
-#tree li.clickable { color: #7fb2ff; }
-#tree-meta { color: #8b94a3; font-size: 12px; }
+button:disabled { background: #2a313d; color: #67707e; cursor: default; }
+#device-select {
+  background: #10131a; color: #e6e9ee; border: 1px solid #2a313d;
+  border-radius: 6px; padding: 5px 8px; font-size: 13px; max-width: 220px;
+}
 
-/* 工单 10:标签页、拾取与验证 */
-.tabs { display: flex; gap: 6px; margin-bottom: 8px; }
-.tab { background: #232a35; color: #aab3c0; border-radius: 6px 6px 0 0; padding: 4px 14px; }
-.tab.active { background: #2f6fed; color: white; }
-.hidden { display: none; }
+/* 三栏布局:画面 / 检查信息 / 层级树 */
+main {
+  display: grid; grid-template-columns: minmax(300px, 32%) minmax(300px, 30%) 1fr;
+  gap: 12px; padding: 12px; align-items: start;
+}
+section { background: #1d222b; border: 1px solid #2a313d; border-radius: 8px; padding: 10px; }
+h2 { margin: 10px 0 6px; font-size: 14px; }
+h2:first-child { margin-top: 0; }
+h2 small { color: #8b94a3; font-weight: 400; font-size: 12px; }
+
+/* 画面栏 */
+#screen-head { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; font-size: 12px; color: #8b94a3; }
+#mode-badge { background: #2f6fed; color: white; border-radius: 4px; padding: 2px 8px; font-size: 12px; }
+#mode-badge.inspect { background: #f0b429; color: #14171c; }
 #stage { position: relative; display: inline-block; width: 100%; }
 #preview { display: block; width: 100%; border: 1px solid #2a313d; background: #000; min-height: 200px; cursor: crosshair; }
 #overlay { position: absolute; inset: 0; pointer-events: none; }
 #overlay div { position: absolute; border: 2px solid #f0b429; box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
 #overlay .tree-box { border-color: #7fb2ff; }
+#overlay .hover-box { border-color: #c9a86a; border-style: dashed; }
 #overlay .pick-box { border-color: #7bd88f; }
 #overlay .match-box { border-color: #ff7b7b; }
+#stale-badge {
+  position: absolute; right: 8px; top: 8px; background: rgba(240,180,41,.9);
+  color: #14171c; font-size: 12px; border-radius: 4px; padding: 2px 8px;
+}
+#preview-message { color: #8b94a3; font-size: 12px; min-height: 1em; margin: 6px 0 0; }
+#stream-notice { color: #f0b429; font-size: 12px; min-height: 1em; margin: 6px 0 0; }
 
-/* 工单 02:视频流暂停遮罩与回退提示 */
-#pause-mask { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 6px;
-  align-items: center; justify-content: center; background: rgba(10, 12, 16, .72);
-  color: #f0b429; font-size: 15px; text-align: center; }
-#pause-mask small { color: #aab3c0; font-size: 12px; max-width: 80%; }
-#stream-notice { color: #f0b429; font-size: 12px; min-height: 1em; }
+/* 检查栏:元素属性表 */
+#attr-table, #region-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#attr-table td, #region-table td { border-bottom: 1px solid #232a35; padding: 4px 4px; vertical-align: top; }
+#attr-table td:first-child, #region-table td:first-child { color: #8b94a3; white-space: nowrap; width: 32%; }
+#attr-table td:last-child, #region-table td:last-child { word-break: break-all; }
+.attr-copy { background: #232a35; color: #aab3c0; border: 0; border-radius: 4px; padding: 1px 8px; font-size: 11px; cursor: pointer; margin-left: 6px; }
 
-/* 工单 04:直接控制 */
-#control-bar { display: flex; gap: 10px; align-items: center; margin-top: 6px; font-size: 13px; }
-#control-bar button { font-size: 12px; padding: 3px 10px; }
-#control-note { color: #7bd88f; font-size: 12px; }
-#stage.control-mode #preview { cursor: pointer; }
-#stage.control-mode #overlay { display: none; }
+.tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.tab { background: #232a35; color: #aab3c0; border-radius: 6px 6px 0 0; padding: 4px 14px; }
+.tab.active { background: #2f6fed; color: white; }
+.hidden { display: none; }
 
-
-#tree li.selected { background: #2a3a55; outline: 1px solid #2f6fed; }
-#candidates h2 { margin-top: 10px; }
-#candidate-list { list-style: none; margin: 0; padding: 0; font-size: 12px; max-height: 180px; overflow: auto; }
+#candidate-list { list-style: none; margin: 0; padding: 0; font-size: 12px; max-height: 200px; overflow: auto; }
 #candidate-list li { padding: 3px 6px; border-bottom: 1px solid #232a35; cursor: pointer; }
+#candidate-list li.empty { color: #8b94a3; cursor: default; }
 #candidate-list li.selected { background: #2a3a55; color: #cfe2ff; }
 #validate-box, #expression-box { margin-top: 8px; display: flex; gap: 10px; align-items: center; }
 #expression { background: #10131a; padding: 6px 10px; border-radius: 4px; font-size: 12px; flex: 1; overflow-x: auto; white-space: nowrap; }
 #validate-note { font-size: 12px; color: #f0b429; }
 
-/* 工单 11:图像模板框选 */
-#image-fields { display: flex; gap: 14px; margin: 8px 0; font-size: 13px; }
+/* 图像模板 */
+#image-fields { display: flex; gap: 14px; margin: 8px 0; font-size: 13px; align-items: center; }
 #image-fields input { background: #10131a; color: #e6e9ee; border: 1px solid #2a313d; border-radius: 4px; padding: 4px 8px; width: 150px; }
 #image-actions { display: flex; gap: 10px; margin-bottom: 8px; }
 #tpl-result { font-size: 12px; color: #7bd88f; min-height: 1.2em; }
 #marquee { position: absolute; border: 2px dashed #7bd88f; background: rgba(123,216,143,.12); pointer-events: none; }
+
+/* 层级树栏 */
+#tree-filter {
+  width: 100%; box-sizing: border-box; background: #10131a; color: #e6e9ee;
+  border: 1px solid #2a313d; border-radius: 4px; padding: 5px 8px; font-size: 12px; margin-bottom: 6px;
+}
+#tree-meta { color: #8b94a3; font-size: 12px; margin: 0 0 6px; }
+#tree { list-style: none; margin: 0; padding: 0; font-size: 12px; max-height: 76vh; overflow: auto; }
+#tree li { padding: 2px 6px; border-bottom: 1px solid #232a35; cursor: default; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tree li.clickable { color: #7fb2ff; }
+#tree li.selected { background: #2a3a55; outline: 1px solid #2f6fed; }
+
+/* 直接控制 */
+#control-label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
+#control-note { color: #7bd88f; font-size: 12px; }
+#stage.control-mode #preview { cursor: pointer; }
+#stage.control-mode #overlay { display: none; }
