@@ -40,3 +40,12 @@ uiautomator2==3.7.1
 urllib3==2.8.0
 uvicorn==0.54.0
 websockets==17.3
+
+# ── P1 stream extra(2026-10-24 追加;scrcpy 视频流/控制通道)──
+wetest-scrcpy==0.4.0
+wetest-osplatform==0.0.2
+wetest-pyidb==0.0.2
+av==18.1.0
+construct==2.10.70
+pydantic==2.13.4
+tidevice==0.12.11

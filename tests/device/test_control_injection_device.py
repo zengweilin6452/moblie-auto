@@ -55,9 +55,10 @@ async def test_tap_opens_wlan_page(control_http):
     assert await adapter.wait_for(row) is True
     (element,) = await adapter.find_elements(row)
     assert client.post("/api/v1/input/touch", json=_norm_center(element.bounds)).status_code == 200
-    time.sleep(1.0)  # 页面过渡
-    # 子页标题与入口同名:验证仍唯一可见即页面状态正常
-    assert await adapter.is_visible(row) is True
+    # 子页打开:子页特有元素出现即成功(页面过渡轮询,不定长等待)
+    assert await _wait_true(
+        lambda: adapter.is_visible(Target(Locator.TEXT, "高级设置"))
+    )
 
 
 @pytest.mark.device
@@ -71,11 +72,21 @@ async def test_back_key_returns_from_subpage(control_http):
     assert await adapter.wait_for(row) is True
     (element,) = await adapter.find_elements(row)
     assert client.post("/api/v1/input/touch", json=_norm_center(element.bounds)).status_code == 200
-    time.sleep(1.0)
+    assert await _wait_true(lambda: adapter.is_visible(Target(Locator.TEXT, "高级设置")))
     _inject_gap()
     assert client.post("/api/v1/input/key", json={"name": "back"}).status_code == 200
-    time.sleep(1.0)
-    assert await adapter.is_visible(row) is True
+    assert await _wait_true(lambda: adapter.is_visible(row))
+
+
+async def _wait_true(probe, timeout: float = 5.0):
+    import asyncio
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if await probe():
+            return True
+        await asyncio.sleep(0.2)
+    return False
 
 
 @pytest.mark.device

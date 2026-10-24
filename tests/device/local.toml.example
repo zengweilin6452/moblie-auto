@@ -18,3 +18,7 @@ value = "搜索系统设置项"
 # 以下可省略(默认值见 plan 9.1)。
 # wait_timeout = 10.0
 # poll_interval = 0.5
+
+# 驱动截图通道(P1):auto=scrcpy 优先、故障回退 u2(默认);u2=强制;
+# scrcpy=强制且故障如实报错。详见 docs/validation.md P1 章节。
+# screenshot_source = "auto"
