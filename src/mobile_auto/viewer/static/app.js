@@ -55,6 +55,7 @@ async function switchDevice(serial) {
   closePreviewSocket();
   setView("live"); // 含 clearInspectInfo:清空旧设备的检查产物
   state.deviceSpace = null;
+  connectPreview(); // 旧连接已关且自动重连回调被清除:按新设备寻址重建
   refreshStatus();
 }
 
@@ -94,6 +95,17 @@ function clearInspectInfo() {
   $("btn-tpl-save").disabled = true;
 }
 
+/* 检查编辑期把快照固定为冻结引用:未冻结的实时快照 120 秒后被驱逐,
+   编辑中途拾取/保存会 404。尽力调用;失败时后续操作按过期重采集。 */
+function freezeSnapshot(id) {
+  if (!id) return;
+  fetch(`/api/v1/snapshots/${id}/freeze`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ frozen: true }),
+  }).catch(() => {});
+}
+
 async function inspectCapture() {
   clearInspectInfo(); // 新快照:清掉上一次冻结检查的属性/候选/框选
   const res = await fetch(`/api/v1/snapshots${qs()}`, {
@@ -110,6 +122,7 @@ async function inspectCapture() {
   state.consistent = data.consistent === true && !data.tree_error;
   state.treeCapturedAt = data.tree_captured_at;
   state.deviceSpace = { w: data.width, h: data.height };
+  freezeSnapshot(data.snapshot_id); // 编辑期固定引用:不冻结 120 秒后被驱逐
   setView("inspect");
   $("preview").src = `/api/v1/snapshots/${data.snapshot_id}/image`;
   $("preview-time").textContent = `冻结于 ${data.captured_at}`;
@@ -387,6 +400,7 @@ async function validatePicked() {
     return;
   }
   state.snapshotId = data.snapshot_id;
+  freezeSnapshot(data.snapshot_id); // 验证结果成为新的编辑底图,同样固定
   $("preview").src = `/api/v1/snapshots/${data.snapshot_id}/image`;
   for (const m of data.matches) drawBox([m.x, m.y, m.x + m.width, m.y + m.height], "match-box");
   $("validate-note").textContent = `匹配 ${data.count} 个 · ${data.note}`;
@@ -703,6 +717,7 @@ async function validateTemplate() {
   const data = await res.json();
   if (!res.ok) { $("tpl-result").textContent = `验证失败(${data.code}):${data.message}`; return; }
   state.snapshotId = data.snapshot_id;
+  freezeSnapshot(data.snapshot_id); // 验证结果成为新的编辑底图,同样固定
   $("preview").src = `/api/v1/snapshots/${data.snapshot_id}/image`;
   for (const m of data.matches) {
     drawBox([m.x, m.y, m.x + m.width, m.y + m.height], "match-box");
