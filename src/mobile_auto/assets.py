@@ -74,6 +74,11 @@ class TemplateStore:
         self._write_lock = threading.Lock()
         self._process_lock_path = self._root / "locks" / "assets.lock"
 
+    @property
+    def root(self) -> Path:
+        """资产根目录(已解析绝对路径);解析缓存的键成分。"""
+        return self._root
+
     # ── 查询 ─────────────────────────────────────────────────
 
     def list_templates(self) -> dict[str, dict]:

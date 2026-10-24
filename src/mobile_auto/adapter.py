@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any, TypeVar
@@ -49,6 +51,43 @@ _IMAGE_FRESH_SECONDS = 1.0  # 采集完成到发送点击的新鲜度上限(plan
 _MISSING = object()  # 区分"本轮未找到"与找到的空值(如空字符串文本)
 
 
+class _TemplateCache:
+    """资产解析缓存(P2):键 (资产根, 逻辑名),清单 version_id 变化即失效。
+
+    命中依赖资产层不变量:版本目录不可变,同一 version_id 的磁盘内容一经
+    load 校验通过即不再变化;更新经清单原子切换产生新 version_id。因此
+    命中路径跳过的只是重复的读盘、摘要与解码,不弱化完整性保证。
+    """
+
+    def __init__(self, capacity: int = 32) -> None:
+        self._capacity = capacity
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[
+            tuple[str, str],
+            tuple[str, object, object],
+        ] = OrderedDict()
+
+    def get(self, store, logical: str):
+        """返回 (LoadedTemplate, PreparedTemplate);未命中走完整 load 校验。"""
+        from .image import prepare_template
+
+        key = (str(store.root), logical)
+        version_id = store.list_templates().get(logical, {}).get("version_id")
+        with self._lock:
+            hit = self._entries.get(key)
+            if hit is not None and hit[0] == version_id:
+                self._entries.move_to_end(key)
+                return hit[1], hit[2]
+        loaded = store.load(logical)
+        prepared = prepare_template(loaded.png, what=f"模板 {logical}")
+        with self._lock:
+            self._entries[key] = (loaded.version_id, loaded, prepared)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._capacity:
+                self._entries.popitem(last=False)
+        return loaded, prepared
+
+
 class MobileAdapter:
     """统一驱动的异步方法面;platform 固定 android。"""
 
@@ -56,6 +95,7 @@ class MobileAdapter:
 
     def __init__(self, session: DeviceSession) -> None:
         self._session = session
+        self._templates = _TemplateCache()
 
     async def _call(self, operation: Callable[[Any], T]) -> T:
         """提交到会话队列并等待;对未开始任务的取消传播由 wrap_future 提供。
@@ -86,15 +126,16 @@ class MobileAdapter:
     def _image_match(self, backend, target: Target):
         """IMAGE 目标的单轮采集与匹配;返回 (模板元数据, 匹配结果列表)。
 
-        匹配无结果是空列表——这是查询结果,不是错误;非法模板与设备
-        错误分别以 InvalidTemplate / DeviceUnavailable 报告。
+        模板经会话级缓存按版本解析(P2):同版本命中免重复读盘与解码,
+        清单切换即失效。匹配无结果是空列表——这是查询结果,不是错误;
+        非法模板与设备错误分别以 InvalidTemplate / DeviceUnavailable 报告。
         """
-        from .image import match_template
+        from .image import match_prepared
 
-        template = self._store().load(target.value)
-        results = match_template(
+        template, prepared = self._templates.get(self._store(), target.value)
+        results = match_prepared(
             backend.screenshot_png(),
-            template.png,
+            prepared,
             confidence=target.confidence,
             region=target.region,
         )

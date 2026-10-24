@@ -105,6 +105,26 @@ def _validate_confidence(confidence: float) -> float:
     return float(confidence)
 
 
+@dataclass(frozen=True)
+class PreparedTemplate:
+    """一次准备、多次匹配的模板:解码与静态校验(不透明、可解码、灰度
+    标准差)在准备阶段完成;匹配阶段不再重复。缓存值类型(P2)。"""
+
+    rgb: np.ndarray
+    gray: np.ndarray
+
+
+def prepare_template(template_png: bytes, *, what: str = "模板") -> PreparedTemplate:
+    """解码模板并完成静态校验;低纹理模板在此拒绝(与 v1 相同的判定)。"""
+    template = decode_rgb(template_png, what=what)
+    template_gray = cv2.cvtColor(template, cv2.COLOR_RGB2GRAY)
+    if float(template_gray.std()) < GRAY_STDDEV_MIN:
+        raise InvalidTemplate(
+            "模板灰度标准差过低(近纯色),相关性会退化;请使用有纹理的模板"
+        )
+    return PreparedTemplate(rgb=template, gray=template_gray)
+
+
 def match_template(
     screenshot_png: bytes,
     template_png: bytes,
@@ -121,24 +141,44 @@ def match_template(
         DEFAULT_CONFIDENCE if confidence is None else _validate_confidence(confidence)
     )
     screenshot = decode_rgb(screenshot_png, what="截图")
-    template = decode_rgb(template_png, what="模板")
+    return _match_prepared(
+        screenshot, prepare_template(template_png), threshold, region
+    )
+
+
+def match_prepared(
+    screenshot_png: bytes,
+    template: PreparedTemplate,
+    *,
+    confidence: float | None = None,
+    region: tuple[int, int, int, int] | None = None,
+) -> list[MatchResult]:
+    """match_template 的免重复解码入口:模板已通过 prepare_template 校验。"""
+    threshold = (
+        DEFAULT_CONFIDENCE if confidence is None else _validate_confidence(confidence)
+    )
+    return _match_prepared(
+        decode_rgb(screenshot_png, what="截图"), template, threshold, region
+    )
+
+
+def _match_prepared(
+    screenshot: np.ndarray,
+    template: PreparedTemplate,
+    threshold: float,
+    region: tuple[int, int, int, int] | None,
+) -> list[MatchResult]:
     rx, ry, rw, rh = _validate_region(region, (screenshot.shape[1], screenshot.shape[0]))
 
     search = screenshot[ry : ry + rh, rx : rx + rw]
-    th, tw = template.shape[:2]
+    th, tw = template.rgb.shape[:2]
     if th > rh or tw > rw:
         raise InvalidTemplate(
             f"模板 {tw}x{th} 大于搜索区域 {rw}x{rh},无法匹配"
         )
 
     search_gray = cv2.cvtColor(search, cv2.COLOR_RGB2GRAY)
-    template_gray = cv2.cvtColor(template, cv2.COLOR_RGB2GRAY)
-    if float(template_gray.std()) < GRAY_STDDEV_MIN:
-        raise InvalidTemplate(
-            "模板灰度标准差过低(近纯色),相关性会退化;请使用有纹理的模板"
-        )
-
-    scores = cv2.matchTemplate(search_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+    scores = cv2.matchTemplate(search_gray, template.gray, cv2.TM_CCOEFF_NORMED)
     if not np.isfinite(scores).all():
         raise InvalidTemplate("匹配产生非有限分数;请检查模板与截图内容")
 
@@ -155,7 +195,7 @@ def match_template(
 
     results = []
     for py, px, score in matches:
-        if not _color_matches(search, template, px, py, tw, th):
+        if not _color_matches(search, template.rgb, px, py, tw, th):
             continue  # 形状相同、状态色不同:判为不匹配(决定 Q3)
         results.append(
             MatchResult(
