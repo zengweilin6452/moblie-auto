@@ -1,0 +1,433 @@
+FF.F                                                                     [100%]
+================================== FAILURES ===================================
+__________________________ test_tap_opens_wlan_page ___________________________
+
+control_http = (<starlette.testclient.TestClient object at 0x0000020C37F661B0>, <mobile_auto.core.session.DeviceSession object at 0x0000020C36B3DD60>)
+
+    @pytest.mark.device
+    async def test_tap_opens_wlan_page(control_http):
+        client, session = control_http
+        from mobile_auto import MobileAdapter
+    
+        adapter = MobileAdapter(session)
+        await adapter.goto("")
+        row = Target(Locator.TEXT, "WLAN")
+        assert await adapter.wait_for(row) is True
+        (element,) = await adapter.find_elements(row)
+        assert client.post("/api/v1/input/touch", json=_norm_center(element.bounds)).status_code == 200
+        # 子页打开:子页特有元素出现即成功(页面过渡轮询,不定长等待)
+>       assert await _wait_true(
+            lambda: adapter.is_visible(Target(Locator.TEXT, "高级设置"))
+        )
+E       assert False
+
+tests\device\test_control_injection_device.py:59: AssertionError
+---------------------------- Captured stderr call -----------------------------
+2026-10-24 21:49:40,223 - wetest.scrcpy.core._device - restart_socket_connection - 103 - DEBUG - Connected to scrcpy server
+2026-10-24 21:49:40,224 - wetest.scrcpy.core._video - start - 97 - INFO - Start screenshot from video stream!
+2026-10-24 21:49:40,238 - wetest.scrcpy.core._device - restart_socket_connection - 103 - DEBUG - Connected to scrcpy server
+2026-10-24 21:49:40,271 - wetest.scrcpy.core._control - write - 71 - DEBUG - write data len: 1
+2026-10-24 21:49:40,273 - wetest.scrcpy.core._control - read_device_msg - 315 - INFO - recv device msg type: GET_ROTATION (106)
+2026-10-24 21:49:40,273 - wetest.scrcpy.core._control - write - 71 - DEBUG - write data len: 28
+2026-10-24 21:49:40,294 - wetest.scrcpy.core._control - write - 71 - DEBUG - write data len: 28
+2026-10-24 21:49:40,450 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.009991884231567383s
+2026-10-24 21:49:40,473 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0016608238220214844s
+2026-10-24 21:49:40,516 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.002497434616088867s
+2026-10-24 21:49:40,569 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015914440155029297s
+2026-10-24 21:49:40,619 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010144710540771484s
+2026-10-24 21:49:40,678 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0087890625s
+2026-10-24 21:49:40,720 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.004029035568237305s
+2026-10-24 21:49:40,776 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.002005338668823242s
+2026-10-24 21:49:40,823 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0020029544830322266s
+2026-10-24 21:49:40,877 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0020012855529785156s
+2026-10-24 21:49:40,930 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0025093555450439453s
+2026-10-24 21:49:40,983 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.002540111541748047s
+2026-10-24 21:49:41,023 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010042190551757812s
+2026-10-24 21:49:41,076 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.002070903778076172s
+2026-10-24 21:49:41,124 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0033729076385498047s
+2026-10-24 21:49:41,248 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0047876834869384766s
+2026-10-24 21:49:41,351 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.005115032196044922s
+2026-10-24 21:49:41,448 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.004050016403198242s
+2026-10-24 21:49:41,476 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0005261898040771484s
+2026-10-24 21:49:41,529 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0027370452880859375s
+2026-10-24 21:49:41,582 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.005610466003417969s
+2026-10-24 21:49:41,619 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.001523733139038086s
+2026-10-24 21:49:41,679 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.002534151077270508s
+2026-10-24 21:49:41,730 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.001535177230834961s
+2026-10-24 21:49:41,780 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0s
+2026-10-24 21:49:41,831 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.004607677459716797s
+2026-10-24 21:49:41,876 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.004797220230102539s
+2026-10-24 21:49:41,933 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0021681785583496094s
+2026-10-24 21:49:42,037 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0030112266540527344s
+2026-10-24 21:49:42,069 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003593921661376953s
+2026-10-24 21:49:42,180 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015134811401367188s
+2026-10-24 21:49:42,272 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003397226333618164s
+2026-10-24 21:49:42,344 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0038449764251708984s
+2026-10-24 21:49:42,484 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0020127296447753906s
+2026-10-24 21:49:42,557 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.002599477767944336s
+2026-10-24 21:49:42,659 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010128021240234375s
+2026-10-24 21:49:42,769 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015091896057128906s
+2026-10-24 21:49:42,868 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010075569152832031s
+2026-10-24 21:49:42,966 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0019817352294921875s
+2026-10-24 21:49:43,059 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010089874267578125s
+2026-10-24 21:49:43,171 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0005164146423339844s
+2026-10-24 21:49:43,272 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003268003463745117s
+2026-10-24 21:49:43,369 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.001554250717163086s
+2026-10-24 21:49:43,474 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0032567977905273438s
+2026-10-24 21:49:43,572 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003127574920654297s
+2026-10-24 21:49:43,676 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0030167102813720703s
+2026-10-24 21:49:43,768 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0005326271057128906s
+2026-10-24 21:49:43,877 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0009996891021728516s
+2026-10-24 21:49:43,911 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0025243759155273438s
+2026-10-24 21:49:43,926 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0009870529174804688s
+2026-10-24 21:49:43,975 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0035507678985595703s
+2026-10-24 21:49:44,033 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.00706028938293457s
+2026-10-24 21:49:44,076 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.002074718475341797s
+2026-10-24 21:49:44,124 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0009996891021728516s
+2026-10-24 21:49:44,175 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0019979476928710938s
+2026-10-24 21:49:44,278 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015721321105957031s
+2026-10-24 21:49:44,380 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.001705169677734375s
+2026-10-24 21:49:44,484 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0027322769165039062s
+2026-10-24 21:49:44,592 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.001041412353515625s
+2026-10-24 21:49:44,688 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010304450988769531s
+2026-10-24 21:49:44,792 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0034012794494628906s
+2026-10-24 21:49:44,900 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.005055427551269531s
+2026-10-24 21:49:44,994 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.005558967590332031s
+2026-10-24 21:49:45,099 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.002518177032470703s
+2026-10-24 21:49:45,197 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0020046234130859375s
+------------------------------ Captured log call ------------------------------
+DEBUG    wetest.scrcpy.core._device:_device.py:103 Connected to scrcpy server
+INFO     wetest.scrcpy.core._video:_video.py:97 Start screenshot from video stream!
+DEBUG    wetest.scrcpy.core._device:_device.py:103 Connected to scrcpy server
+DEBUG    wetest.scrcpy.core._control:_control.py:71 write data len: 1
+INFO     wetest.scrcpy.core._control:_control.py:315 recv device msg type: GET_ROTATION (106)
+DEBUG    wetest.scrcpy.core._control:_control.py:71 write data len: 28
+DEBUG    wetest.scrcpy.core._control:_control.py:71 write data len: 28
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.009991884231567383s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0016608238220214844s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.002497434616088867s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015914440155029297s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010144710540771484s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0087890625s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.004029035568237305s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.002005338668823242s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0020029544830322266s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0020012855529785156s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0025093555450439453s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.002540111541748047s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010042190551757812s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.002070903778076172s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0033729076385498047s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0047876834869384766s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.005115032196044922s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.004050016403198242s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0005261898040771484s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0027370452880859375s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.005610466003417969s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.001523733139038086s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.002534151077270508s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.001535177230834961s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.004607677459716797s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.004797220230102539s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0021681785583496094s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0030112266540527344s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003593921661376953s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015134811401367188s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003397226333618164s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0038449764251708984s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0020127296447753906s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.002599477767944336s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010128021240234375s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015091896057128906s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010075569152832031s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0019817352294921875s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010089874267578125s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0005164146423339844s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003268003463745117s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.001554250717163086s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0032567977905273438s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003127574920654297s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0030167102813720703s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0005326271057128906s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0009996891021728516s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0025243759155273438s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0009870529174804688s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0035507678985595703s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.00706028938293457s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.002074718475341797s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0009996891021728516s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0019979476928710938s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015721321105957031s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.001705169677734375s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0027322769165039062s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.001041412353515625s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010304450988769531s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0034012794494628906s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.005055427551269531s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.005558967590332031s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.002518177032470703s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0020046234130859375s
+-------------------------- Captured stderr teardown ---------------------------
+2026-10-24 21:49:50,679 - wetest.scrcpy.core._video - _video_stream_worker - 141 - DEBUG - Error in video stream worker
+Traceback (most recent call last):
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_video.py", line 138, in _video_stream_worker
+    frame = video_conn.read_video_frame()
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_video.py", line 55, in read_video_frame
+    buf = self.read(12)
+          ^^^^^^^^^^^^^
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_socket.py", line 53, in recv
+    chunk = self._sock.recv(size - len(buf))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [WinError 10038] 在一个非套接字上尝试了一个操作。
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_video.py", line 136, in _video_stream_worker
+    with VideoConn(self._sock) as video_conn:
+         ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_socket.py", line 79, in __exit__
+    self.close()
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_socket.py", line 66, in close
+    self._sock.shutdown(socket.SHUT_RDWR)
+OSError: [WinError 10038] 在一个非套接字上尝试了一个操作。
+2026-10-24 21:49:50,679 - wetest.scrcpy.core._video - _close_socket - 118 - DEBUG - Close socket connection with scrcpy!
+2026-10-24 21:49:50,680 - wetest.scrcpy.core._video - stop - 112 - INFO - Stop screenshot from video stream!
+---------------------------- Captured log teardown ----------------------------
+DEBUG    wetest.scrcpy.core._video:_video.py:141 Error in video stream worker
+Traceback (most recent call last):
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_video.py", line 138, in _video_stream_worker
+    frame = video_conn.read_video_frame()
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_video.py", line 55, in read_video_frame
+    buf = self.read(12)
+          ^^^^^^^^^^^^^
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_socket.py", line 53, in recv
+    chunk = self._sock.recv(size - len(buf))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [WinError 10038] 在一个非套接字上尝试了一个操作。
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_video.py", line 136, in _video_stream_worker
+    with VideoConn(self._sock) as video_conn:
+         ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_socket.py", line 79, in __exit__
+    self.close()
+  File "D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\wetest\scrcpy\core\_socket.py", line 66, in close
+    self._sock.shutdown(socket.SHUT_RDWR)
+OSError: [WinError 10038] 在一个非套接字上尝试了一个操作。
+DEBUG    wetest.scrcpy.core._video:_video.py:118 Close socket connection with scrcpy!
+INFO     wetest.scrcpy.core._video:_video.py:112 Stop screenshot from video stream!
+_____________________ test_back_key_returns_from_subpage ______________________
+
+control_http = (<starlette.testclient.TestClient object at 0x0000020C56694B00>, <mobile_auto.core.session.DeviceSession object at 0x0000020C38258C50>)
+
+    @pytest.mark.device
+    async def test_back_key_returns_from_subpage(control_http):
+        client, session = control_http
+        from mobile_auto import MobileAdapter
+    
+        adapter = MobileAdapter(session)
+        await adapter.goto("")
+        row = Target(Locator.TEXT, "WLAN")
+        assert await adapter.wait_for(row) is True
+        (element,) = await adapter.find_elements(row)
+        assert client.post("/api/v1/input/touch", json=_norm_center(element.bounds)).status_code == 200
+>       assert await _wait_true(lambda: adapter.is_visible(Target(Locator.TEXT, "高级设置")))
+E       assert False
+
+tests\device\test_control_injection_device.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+2026-10-24 21:49:53,168 - wetest.scrcpy.core._device - restart_socket_connection - 103 - DEBUG - Connected to scrcpy server
+2026-10-24 21:49:53,168 - wetest.scrcpy.core._video - start - 97 - INFO - Start screenshot from video stream!
+2026-10-24 21:49:53,183 - wetest.scrcpy.core._device - restart_socket_connection - 103 - DEBUG - Connected to scrcpy server
+2026-10-24 21:49:53,215 - wetest.scrcpy.core._control - write - 71 - DEBUG - write data len: 1
+2026-10-24 21:49:53,218 - wetest.scrcpy.core._control - read_device_msg - 315 - INFO - recv device msg type: GET_ROTATION (106)
+2026-10-24 21:49:53,221 - wetest.scrcpy.core._control - write - 71 - DEBUG - write data len: 28
+2026-10-24 21:49:53,243 - wetest.scrcpy.core._control - write - 71 - DEBUG - write data len: 28
+2026-10-24 21:49:53,456 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.00763702392578125s
+2026-10-24 21:49:53,479 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010044574737548828s
+2026-10-24 21:49:53,499 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0011649131774902344s
+2026-10-24 21:49:53,530 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010001659393310547s
+2026-10-24 21:49:53,583 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003233671188354492s
+2026-10-24 21:49:53,630 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.00099945068359375s
+2026-10-24 21:49:53,682 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003086090087890625s
+2026-10-24 21:49:53,732 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003153085708618164s
+2026-10-24 21:49:53,789 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003066539764404297s
+2026-10-24 21:49:53,840 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0025072097778320312s
+2026-10-24 21:49:53,883 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0022449493408203125s
+2026-10-24 21:49:53,933 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0026416778564453125s
+2026-10-24 21:49:53,986 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.002000093460083008s
+2026-10-24 21:49:54,036 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0019898414611816406s
+2026-10-24 21:49:54,082 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.001714944839477539s
+2026-10-24 21:49:54,134 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010063648223876953s
+2026-10-24 21:49:54,241 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015063285827636719s
+2026-10-24 21:49:54,371 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.00150299072265625s
+2026-10-24 21:49:54,439 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010764598846435547s
+2026-10-24 21:49:54,477 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.001314401626586914s
+2026-10-24 21:49:54,504 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010004043579101562s
+2026-10-24 21:49:54,530 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015025138854980469s
+2026-10-24 21:49:54,581 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010955333709716797s
+2026-10-24 21:49:54,631 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010340213775634766s
+2026-10-24 21:49:54,681 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015044212341308594s
+2026-10-24 21:49:54,737 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.005246162414550781s
+2026-10-24 21:49:54,782 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.00101470947265625s
+2026-10-24 21:49:54,838 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.006312131881713867s
+2026-10-24 21:49:54,895 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.006376028060913086s
+2026-10-24 21:49:54,941 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0064849853515625s
+2026-10-24 21:49:55,036 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010001659393310547s
+2026-10-24 21:49:55,077 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003001689910888672s
+2026-10-24 21:49:55,173 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015058517456054688s
+2026-10-24 21:49:55,214 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010006427764892578s
+2026-10-24 21:49:55,319 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0035331249237060547s
+2026-10-24 21:49:55,330 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0s
+2026-10-24 21:49:55,439 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015048980712890625s
+2026-10-24 21:49:55,545 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003190755844116211s
+2026-10-24 21:49:55,646 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0011179447174072266s
+2026-10-24 21:49:55,750 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010409355163574219s
+2026-10-24 21:49:55,852 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0030329227447509766s
+2026-10-24 21:49:55,954 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015377998352050781s
+2026-10-24 21:49:56,049 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.004500865936279297s
+2026-10-24 21:49:56,062 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015192031860351562s
+2026-10-24 21:49:56,176 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015041828155517578s
+2026-10-24 21:49:56,279 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0005071163177490234s
+2026-10-24 21:49:56,375 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0016093254089355469s
+2026-10-24 21:49:56,473 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0025627613067626953s
+2026-10-24 21:49:56,583 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0012860298156738281s
+2026-10-24 21:49:56,683 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010030269622802734s
+2026-10-24 21:49:56,777 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010280609130859375s
+2026-10-24 21:49:56,883 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.001065969467163086s
+2026-10-24 21:49:56,916 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0009970664978027344s
+2026-10-24 21:49:56,932 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010619163513183594s
+2026-10-24 21:49:56,988 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015604496002197266s
+2026-10-24 21:49:57,038 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015027523040771484s
+2026-10-24 21:49:57,088 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010442733764648438s
+2026-10-24 21:49:57,136 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010349750518798828s
+2026-10-24 21:49:57,270 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010004043579101562s
+2026-10-24 21:49:57,410 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015156269073486328s
+2026-10-24 21:49:57,473 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.001005411148071289s
+2026-10-24 21:49:57,582 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010051727294921875s
+2026-10-24 21:49:57,684 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015480518341064453s
+2026-10-24 21:49:57,791 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010294914245605469s
+2026-10-24 21:49:57,891 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015385150909423828s
+2026-10-24 21:49:57,988 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0010035037994384766s
+2026-10-24 21:49:58,091 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0025091171264648438s
+2026-10-24 21:49:58,195 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0021872520446777344s
+2026-10-24 21:49:58,263 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.0015063285827636719s
+------------------------------ Captured log call ------------------------------
+DEBUG    wetest.scrcpy.core._device:_device.py:103 Connected to scrcpy server
+INFO     wetest.scrcpy.core._video:_video.py:97 Start screenshot from video stream!
+DEBUG    wetest.scrcpy.core._device:_device.py:103 Connected to scrcpy server
+DEBUG    wetest.scrcpy.core._control:_control.py:71 write data len: 1
+INFO     wetest.scrcpy.core._control:_control.py:315 recv device msg type: GET_ROTATION (106)
+DEBUG    wetest.scrcpy.core._control:_control.py:71 write data len: 28
+DEBUG    wetest.scrcpy.core._control:_control.py:71 write data len: 28
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.00763702392578125s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010044574737548828s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0011649131774902344s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010001659393310547s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003233671188354492s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.00099945068359375s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003086090087890625s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003153085708618164s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003066539764404297s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0025072097778320312s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0022449493408203125s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0026416778564453125s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.002000093460083008s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0019898414611816406s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.001714944839477539s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010063648223876953s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015063285827636719s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.00150299072265625s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010764598846435547s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.001314401626586914s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010004043579101562s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015025138854980469s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010955333709716797s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010340213775634766s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015044212341308594s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.005246162414550781s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.00101470947265625s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.006312131881713867s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.006376028060913086s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0064849853515625s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010001659393310547s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003001689910888672s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015058517456054688s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010006427764892578s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0035331249237060547s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015048980712890625s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003190755844116211s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0011179447174072266s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010409355163574219s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0030329227447509766s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015377998352050781s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.004500865936279297s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015192031860351562s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015041828155517578s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0005071163177490234s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0016093254089355469s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0025627613067626953s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0012860298156738281s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010030269622802734s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010280609130859375s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.001065969467163086s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0009970664978027344s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010619163513183594s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015604496002197266s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015027523040771484s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010442733764648438s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010349750518798828s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010004043579101562s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015156269073486328s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.001005411148071289s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010051727294921875s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015480518341064453s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010294914245605469s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015385150909423828s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0010035037994384766s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0025091171264648438s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0021872520446777344s
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.0015063285827636719s
+-------------------------- Captured stderr teardown ---------------------------
+2026-10-24 21:49:58,377 - wetest.scrcpy.core._video - _process_video_frame - 159 - DEBUG - Parsed image size: (1080, 488, 3), duration: 0.003068208694458008s
+2026-10-24 21:49:58,379 - wetest.scrcpy.core._video - _close_socket - 118 - DEBUG - Close socket connection with scrcpy!
+2026-10-24 21:49:58,379 - wetest.scrcpy.core._video - stop - 112 - INFO - Stop screenshot from video stream!
+---------------------------- Captured log teardown ----------------------------
+DEBUG    wetest.scrcpy.core._video:_video.py:159 Parsed image size: (1080, 488, 3), duration: 0.003068208694458008s
+DEBUG    wetest.scrcpy.core._video:_video.py:118 Close socket connection with scrcpy!
+INFO     wetest.scrcpy.core._video:_video.py:112 Stop screenshot from video stream!
+______________ test_pick_validate_expression_roundtrip_on_device ______________
+
+viewer = (<starlette.testclient.TestClient object at 0x0000020C56694B00>, <mobile_auto.core.adapter.MobileAdapter object at 0x0000020C57417C20>)
+
+    @pytest.mark.device
+    def test_pick_validate_expression_roundtrip_on_device(viewer):
+        http, adapter = viewer
+        snap = http.post("/api/v1/snapshots", json={"with_tree": True}).json()
+        assert snap["tree_error"] is None
+    
+        # 在树中找 WLAN 文本节点,取其中心作为拾取点
+        tree = http.get(f"/api/v1/snapshots/{snap['snapshot_id']}/tree").json()["nodes"]
+>       wlan = next(n for n in tree if n["text"] == "WLAN")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       StopIteration
+
+tests\device\test_viewer_picking_e2e.py:39: StopIteration
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/device/test_control_injection_device.py::test_tap_opens_wlan_page
+FAILED tests/device/test_control_injection_device.py::test_back_key_returns_from_subpage
+FAILED tests/device/test_viewer_picking_e2e.py::test_pick_validate_expression_roundtrip_on_device
+3 failed, 1 passed, 1 warning in 26.26s

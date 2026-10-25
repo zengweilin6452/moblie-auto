@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "logical": "verify/search_icon.png",
+  "image_sha256": "7ccf9216c436eb5dc927518e15ab67a09c9a5b0a47158257223166b26a72ac34",
+  "width": 49,
+  "height": 49,
+  "source_width": 1080,
+  "source_height": 2400,
+  "orientation": "portrait",
+  "app_package": "com.sinosoft.trainapp",
+  "capture_time": "2026-10-24T12:10:23.563+00:00",
+  "note": "真机验证模板"
+}

@@ -1,7 +1,7 @@
 # mobile-auto
 
 Android 移动能力包:原生与图像定位驱动、scrcpy 视频流调试网页、失败证据采集、多设备并行与测试平台基础能力。
-交付形态为**源码**(不打包 wheel);面向内网 pytest 体系的接入指南见 `docs/integration.md`(本地保留)。
+交付形态为**源码**(不打包 wheel);面向内网 pytest 体系的接入指南见 `docs/integration.md`。
 
 ## 快速开始
 

@@ -29,12 +29,11 @@ tests/device/local.toml
 tests/device/artifacts/
 tests/device/assets/
 
-# ── 文档与过程内容(本地保留,不入库;2026-10-24 抽离干净版本)──
+# ── 文档与过程内容 ──
 # 项目过程管理:PRD 复审计划、spec、工单追踪与调试快照
 /.scratch/
-# 移交与说明文档:接入指南、离线清单、验证记录、演示 App 登记、PRD、agent 约定
-/docs/
-# agent 工程配置与术语表
+# docs/ 已入库(2026-10-25 决定:内网克隆需接入指南与 PRD;调试快照一并随库)
+# agent 工程配置与术语表(仍本地保留)
 /CLAUDE.md
 /GLOSSARY.md
 

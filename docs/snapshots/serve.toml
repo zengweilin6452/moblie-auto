@@ -1,0 +1,8 @@
+# Beta_Academy 真机投屏/调试服务配置
+device_serial = "749622c9"
+app_package = "com.sinosoft.trainapp"
+app_activity = ".MainActivity"
+# 语言无关就绪锚点:登录页/首页均存在(content-desc 不随语言漂移)
+[launch_ready_target]
+by = "accessibility_id"
+value = "language"

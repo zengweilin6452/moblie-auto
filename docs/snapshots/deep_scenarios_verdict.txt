@@ -1,0 +1,5 @@
+1.列表滚动加载: 部分可行:列表可滚动,但当前账号数据量不足以触发分页加载;工具能力(scroll+计数断言)成立,分页断言需数据充足时复验
+2.嵌套滚动容器: 可行(经 adapter.device.swipe):课程页分类横条(y=402)坐标手势命中(通道 scrcpy,scrcpy 控制流),分类滚动可见;首页内嵌容器为静态布局(与手势无关);契约 scroll 仍固定屏幕中线,定向场景用 device 扩展面
+3.WebView: 可行:经「问题反馈」打开 WebView(android.webkit.WebView)
+4.长按: 可行(经 adapter.device.long_press):框架级长按已生效(通道 scrcpy;菜单类长按行为已由 MIUI 桌面编辑模式判据在 test_device_ops_device.py 双通道验证);本 App 知识库条目长按未定义菜单(新增节点非菜单形态),长按能力以系统级判据为准;契约 15 方法仍无长按,属 device 扩展面
+5.多窗口/分屏: 不可行(留待真实需要再评估):device.* 已提供坐标手势与长按,理论上可在最近任务拼卡片长按触发分屏;但 MIUI 最近任务为专有 UI,卡片节点不出现在 App dump 中、坐标不可稳定定位,脚本化不可靠;App 侧 resizeableActivity=支持多窗口调整大小(=RESIZEABLE_VIA_SDK_VERSION)(标志支持分屏不代表可稳定触发)。替代路径:adb shell 手段(am stack/windowingMode)不属于 MobileAdapter 契约,未采用

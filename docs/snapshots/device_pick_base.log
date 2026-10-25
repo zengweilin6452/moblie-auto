@@ -1,0 +1,28 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+______________ test_pick_validate_expression_roundtrip_on_device ______________
+
+viewer = (<starlette.testclient.TestClient object at 0x000002A0391F8F80>, <mobile_auto.core.adapter.MobileAdapter object at 0x000002A0391F8C80>)
+
+    @pytest.mark.device
+    def test_pick_validate_expression_roundtrip_on_device(viewer):
+        http, adapter = viewer
+        snap = http.post("/api/v1/snapshots", json={"with_tree": True}).json()
+        assert snap["tree_error"] is None
+    
+        # 在树中找 WLAN 文本节点,取其中心作为拾取点
+        tree = http.get(f"/api/v1/snapshots/{snap['snapshot_id']}/tree").json()["nodes"]
+>       wlan = next(n for n in tree if n["text"] == "WLAN")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       StopIteration
+
+tests\device\test_viewer_picking_e2e.py:39: StopIteration
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\workspace\claudecode-test\moblie-auto\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/device/test_viewer_picking_e2e.py::test_pick_validate_expression_roundtrip_on_device
+1 failed, 1 warning in 2.35s

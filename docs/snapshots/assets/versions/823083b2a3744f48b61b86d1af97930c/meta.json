@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "logical": "e2e/verify.png",
+  "image_sha256": "3c3de9d9c0fb9fa31a0f841c85e7c8ad2f806957210ce67c2fdbb47b98d21cd9",
+  "width": 40,
+  "height": 40,
+  "source_width": 1080,
+  "source_height": 2400,
+  "orientation": "portrait",
+  "app_package": "com.sinosoft.trainapp",
+  "capture_time": "2026-10-24T15:52:31.310+00:00",
+  "note": ""
+}

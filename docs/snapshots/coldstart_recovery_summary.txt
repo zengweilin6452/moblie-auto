@@ -1,0 +1,5 @@
+[01] 自然落点=home (1.3s) {'EditText': 1, 'desc=language': True, 'desc=Search': True, '底部tab(首页/我的)': True, '文本含登录/Log': False}
+[02] 自然落点=home (1.3s) {'EditText': 1, 'desc=language': True, 'desc=Search': True, '底部tab(首页/我的)': True, '文本含登录/Log': False}
+[03] 自然落点=home (1.2s) {'EditText': 1, 'desc=language': True, 'desc=Search': True, '底部tab(首页/我的)': True, '文本含登录/Log': False}
+[04] 自然落点=home (1.2s) {'EditText': 1, 'desc=language': True, 'desc=Search': True, '底部tab(首页/我的)': True, '文本含登录/Log': False}
+[05] 自然落点=home (1.2s) {'EditText': 1, 'desc=language': True, 'desc=Search': True, '底部tab(首页/我的)': True, '文本含登录/Log': False}

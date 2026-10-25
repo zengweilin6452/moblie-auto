@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "templates": {
+    "class.png": {
+      "image_sha256": "95138784b797998567fa4f13d666b3431226193ce5817ea3528f587aae0e7eb3",
+      "version_id": "86ae24eb728f41398c8c03824d00a2a7"
+    },
+    "class2.png": {
+      "image_sha256": "315ff5c27870312e89725a7110ce6604bdc245cad07508387fb30b82a907a055",
+      "version_id": "0fb87ebe5ab54f7698f813a82110d2b5"
+    },
+    "e2e/verify.png": {
+      "image_sha256": "3c3de9d9c0fb9fa31a0f841c85e7c8ad2f806957210ce67c2fdbb47b98d21cd9",
+      "version_id": "823083b2a3744f48b61b86d1af97930c"
+    },
+    "verify/search_icon.png": {
+      "image_sha256": "7ccf9216c436eb5dc927518e15ab67a09c9a5b0a47158257223166b26a72ac34",
+      "version_id": "ff94542a1c214e6a95c9ea4f247ac656"
+    }
+  }
+}
