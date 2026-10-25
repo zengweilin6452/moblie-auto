@@ -28,6 +28,13 @@
   </nav>
   <main>
     <section id="preview-pane">
+      <details id="occupancy-box">
+        <summary>设备占用与运行态</summary>
+        <table id="occupancy-table">
+          <thead><tr><th>设备</th><th>占用</th><th>运行中用例</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </details>
       <div id="screen-head">
         <span id="mode-badge">实时</span>
         <span id="freshness"></span>
@@ -102,6 +109,7 @@
   <script src="/coords.js"></script>
   <script src="/snapshot_freeze.js"></script>
   <script src="/evidence.js"></script>
+  <script src="/runs.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

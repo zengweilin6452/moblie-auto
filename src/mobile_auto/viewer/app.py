@@ -212,6 +212,28 @@ def _read_evidence_file(config, evidence_id: str, name: str):
     return None
 
 
+def _probe_leases(serials: list[str]) -> list[dict]:
+    """各设备当前占用与持有者(只读探测;持锁文件的任何 I/O 都被拒,
+    故经伴生文件读信息、试锁判占用)。"""
+    from ..core.lease import DeviceLease, read_holder
+
+    items = []
+    for serial in serials:
+        lease = DeviceLease(serial)
+        try:
+            held = lease.probe_held()
+        except Exception:
+            held = False
+        items.append(
+            {
+                "serial": serial,
+                "held": held,
+                "holder": read_holder(serial) if held else None,
+            }
+        )
+    return items
+
+
 class _ChannelManager(ServerSupervisor):
     """viewer 进程内的 scrcpy 通道监督器:启动经租约短事务,预览客户端即用户。
 
@@ -599,6 +621,29 @@ def create_app(
             media_type=media_type,
             headers={"cache-control": "no-store"},
         )
+
+    # ── 占用与运行态(P2 工单 07;只读)─────────────────────
+
+    @app.get("/api/v1/leases")
+    async def leases(request: Request):
+        """设备占用可视:probe_held 判定当前占用,伴生文件呈现持有者。
+
+        空闲设备不返回持有者(伴生内容是上次获取的残留)。
+        """
+        registry: _DeviceRegistry = app.state.registry
+        serials = [d["serial"] for d in registry.devices()]
+        result = await asyncio.to_thread(_probe_leases, serials)
+        return {"leases": result, "request_id": request.state.request_id}
+
+    @app.get("/api/v1/runs")
+    async def runs(request: Request):
+        """各 worker 的运行状态(池化运行写入 artifacts/runs;心跳过期标失联)。"""
+        from ..pool import read_run_states
+
+        states = await asyncio.to_thread(
+            read_run_states, Path(app.state.registry.config.artifacts_dir) / "runs"
+        )
+        return {"runs": states, "request_id": request.state.request_id}
 
     # ── 快照 ──────────────────────────────────────────────────
 
