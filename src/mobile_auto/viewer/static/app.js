@@ -819,15 +819,35 @@ $("btn-copy").addEventListener("click", async () => {
   setTimeout(() => ($("btn-copy").textContent = "复制表达式"), 1200);
 });
 $("preview").addEventListener("click", pickAt);
-// 画面容器宽高比跟帧走(实时流帧与检查快照都经 load 事件覆盖):
-// 容器与图片内容完全重合,object-fit 黑边、overlay 偏移、坐标换算三者
-// 都不会出现 letterbox 错位;默认 9/19.5 仅首帧前兜底
-$("preview").addEventListener("load", () => {
+
+/* 画面尺寸:容器严格等于图片内容显示尺寸(坐标正确性的前提)。
+   策略 = fit 进「栏可用宽 × 视口可用高」的等比盒子:先按宽度算高度,
+   高度超限则改按高度反算宽度。容器与 img 尺寸一致 ⇒ rect 即内容盒,
+   归一化坐标(getBoundingClientRect)与 overlay 定位都无 letterbox 偏移。
+   触发:每帧 load(分辨率/宽高比变化)+ 窗口 resize。 */
+function fitStage() {
   const img = $("preview");
-  if (img.naturalWidth && img.naturalHeight) {
-    $("stage").style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
+  const pane = $("preview-pane");
+  if (!img.naturalWidth || !img.naturalHeight || !pane) return;
+  const availW = pane.clientWidth - 2; // 减去 stage 边框
+  const availH = Math.max(window.innerHeight - 230, 240);
+  const ratio = img.naturalWidth / img.naturalHeight;
+  let w = availW;
+  let h = w / ratio;
+  if (h > availH) {
+    h = availH;
+    w = h * ratio;
   }
-});
+  const stage = $("stage");
+  stage.style.width = `${Math.round(w)}px`;
+  stage.style.height = `${Math.round(h)}px`;
+  stage.style.maxHeight = "none";
+  img.style.width = "100%";
+  img.style.height = "100%";
+}
+
+$("preview").addEventListener("load", fitStage);
+window.addEventListener("resize", fitStage);
 setupTabs();
 window.addEventListener("pagehide", () => freezeControl.release()); // 卸载前释放冻结引用
 refreshStatus();

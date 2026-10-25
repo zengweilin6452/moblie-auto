@@ -27,9 +27,12 @@ h2 { margin: 10px 0 6px; font-size: 14px; }
 h2:first-child { margin-top: 0; }
 h2 small { color: #8b94a3; font-weight: 400; font-size: 12px; }
 
-/* 画面栏:等比适配视口高度(不同浏览器窗口高不一致时不再溢出裁切);
-   容器统一 9:19.5 宽高比,不同宽高比设备由 object-fit 留黑边对齐。
-   坐标不受影响:coords.js 按显示 rect 与设备像素空间实时比例换算 */
+/* 画面栏:等比适配视口高度(不同浏览器窗口高不一致时不再溢出裁切)。
+   关键:容器尺寸必须严格等于图片内容的显示尺寸——否则
+   getBoundingClientRect() 返回容器盒而内容居中留黑边,归一化坐标
+   会整体偏移(曾用 object-fit:contain + 固定 aspect-ratio 容器踩此坑:
+   点击落点与画面错位)。做法:容器宽高比由 JS 按帧更新,img 100% 填充,
+   容器只做 max-height/max-width 约束以适配视口 */
 #screen-head { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; font-size: 12px; color: #8b94a3; }
 #mode-badge { background: #2f6fed; color: white; border-radius: 4px; padding: 2px 8px; font-size: 12px; }
 #mode-badge.inspect { background: #f0b429; color: #14171c; }
@@ -37,8 +40,7 @@ h2 small { color: #8b94a3; font-weight: 400; font-size: 12px; }
 #stage {
   position: relative;
   width: 100%;
-  aspect-ratio: 9 / 19.5;
-  max-height: calc(100vh - 230px); /* header/通知行/边距固定高度 */
+  min-height: 200px;      /* 首帧到达前占位;之后由 fitStage() 设为精确像素 */
   margin: 0 auto;
   background: #000;
   border: 1px solid #2a313d;
@@ -48,7 +50,6 @@ h2 small { color: #8b94a3; font-weight: 400; font-size: 12px; }
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: contain;
   cursor: crosshair;
 }
 #overlay { position: absolute; inset: 0; pointer-events: none; }
