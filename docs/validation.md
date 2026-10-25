@@ -203,15 +203,15 @@ python -m pytest tests/device/test_reliability_30x.py -m device --mobile-config 
 
 ## Beta_Academy 深场景可行性(2026-10-25)
 
-脚本:docs/snapshots/verify_deep_scenarios.py(证据 dump 同目录 deep_*.xml/png,
-结论存 deep_scenarios_verdict.txt);全部操作走 MobileAdapter 契约面,
+脚本:docs/snapshots/verify_deep_scenarios.py(证据 dump 同目录 deep_*.xml,
+结论存 deep_scenarios_verdict.txt;截图不入库);全部操作走 MobileAdapter 契约面,
 底层探针单独标注。
 
 | 场景 | 结论 | 依据 |
 | :--- | :--- | :--- |
 | 列表滚动加载 | 部分可行 | 知识库列表可滚动;当前账号仅 5 项、数据不足以触发分页;工具能力(scroll+计数断言)成立,分页断言需数据充足时复验 |
 | 嵌套滚动容器 | 结构存在,定向操作不可行 | 首页 ScrollView 内嵌两个横向容器(y=[0,637]/[983,1170]);契约 scroll 固定屏幕中线 y=1200 手势,内层均不在射程;契约无坐标级手势 API(既定决策:真实场景需要时再扩展 adapter 面) |
-| WebView | 可行 | 设置页「问题反馈」打开 android.webkit.WebView(证据 deep_s3_target_1.xml/png);其余已探查页面均为原生 Compose 容器 |
+| WebView | 可行 | 设置页「问题反馈」打开 android.webkit.WebView(证据 deep_s3_target_1.xml);其余已探查页面均为原生 Compose 容器 |
 | 长按 | 不可行(契约) | 15 方法无 long_press;底层探针:同点 0.8s swipe 注入无报错,但被 App 识别为普通点击(进入目录),不能替代长按;u2 原生 long_click 未暴露到本包后端 |
 | 多窗口/分屏 | 不可行(契约) | 触发分屏需最近任务里拖拽/长按卡片,契约无坐标手势与长按;press_key('recent') 为可达最远点;App 标志 RESIZEABLE_VIA_SDK_VERSION(支持分屏≠可经工具触发);adb shell 路径(am stack/windowingMode)不属于契约,未采用 |
 

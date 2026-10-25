@@ -78,7 +78,7 @@ scripts/
 └── bench_image.py         # 图像引擎基准/校准脚本
 examples/
 ├── native_flow / image_flow / evidence_flow   # 单设备接入示例
-└── byd_academy/           # 真机用例套件:pytest fixture 平台注入(platform 标记/
+└── beta_academy/           # 真机用例套件:pytest fixture 平台注入(platform 标记/
                            #   platform+app fixture 端分发/--platform 旗标端选择)
 tests/
 ├── unit/                  # 单元(伪造设备/伪造通道,不碰 adb)+ node 纯函数测试

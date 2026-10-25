@@ -1,4 +1,4 @@
-"""BYD Academy(Beta_Academy)移动端示例套具:pytest fixture 注入平台信息。
+"""Beta Academy(Beta_Academy)移动端示例套具:pytest fixture 注入平台信息。
 
 平台注入三件套(与内网 browser-harness 双轨对接同形):
 1. 归属声明:@pytest.mark.platform("android") / ("web");可叠加多标记=多端通用。
@@ -102,7 +102,7 @@ def mobile_config(request):
     path = request.config.getoption("--mobile-config")
     if not path:
         pytest.skip(
-            "未提供 --mobile-config(复制 examples/byd_academy/local.toml.example"
+            "未提供 --mobile-config(复制 examples/beta_academy/local.toml.example"
             " 为 local.toml 后指定)"
         )
     return load_config(path)

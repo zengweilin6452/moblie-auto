@@ -1,4 +1,4 @@
-"""BYD Academy 公共导航流与锚点(全部锚点经 2026-10-25 真机验证)。
+"""Beta Academy 公共导航流与锚点(全部锚点经 2026-10-25 真机验证)。
 
 锚点选择原则(见 conftest 模块docstring):Compose 无 resource-id,
 优先 accessibility desc(语言无关);TEXT 锚点受服务端语言漂移影响,

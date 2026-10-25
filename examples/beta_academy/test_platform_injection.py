@@ -5,7 +5,7 @@
 - platform / app fixture:端身份与端驱动注入,用例不感知差异。
 
 试跑:
-    pytest examples/byd_academy --mobile-config examples/byd_academy/local.toml
+    pytest examples/beta_academy --mobile-config examples/beta_academy/local.toml
     pytest ... --platform=web      # 观察非本端用例整体跳过
 """
 
@@ -38,7 +38,7 @@ async def test_web_only_case_needs_browser(platform, app):
     内网接入时绑定层把 Browser 注入同名 app fixture,本用例零改动。
     """
     assert platform == "web"
-    assert await app.title_contains("BYD")  # web 驱动面(示意)
+    assert await app.title_contains("Beta")  # web 驱动面(示意)
 
 
 @pytest.mark.platform("android")

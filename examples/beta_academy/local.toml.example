@@ -1,4 +1,4 @@
-# BYD Academy 移动端配置模板:复制为 local.toml(不入库)后按需修改。
+# Beta Academy 移动端配置模板:复制为 local.toml(不入库)后按需修改。
 # 字段说明见 docs/integration.md;App 为 Beta_Academy V1.9.77(真机验证基线)。
 
 device_serial = "749622c9"

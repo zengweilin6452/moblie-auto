@@ -107,13 +107,13 @@ async def main():
         # ---- 7. ElementHandle.input_text ----
         els = await adapter.find_elements(edit)
         if els:
-            await els[0].input_text("BYD培训")
+            await els[0].input_text("Beta培训")
             await asyncio.sleep(0.8)
             xml = await bcall(lambda b: b.dump_ui())
-            record("ElementHandle.input_text 'BYD培训'", "BYD培训" in xml)
+            record("ElementHandle.input_text 'Beta培训'", "Beta培训" in xml)
             (SNAP / "ops_11_typed2.png").write_bytes(await adapter.screenshot())
         else:
-            record("ElementHandle.input_text 'BYD培训'", False, "未找到 EditText")
+            record("ElementHandle.input_text 'Beta培训'", False, "未找到 EditText")
 
         # ---- 8. 退出搜索页回首页 ----
         await adapter.back()
