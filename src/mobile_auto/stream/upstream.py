@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from ..errors import StreamUnavailable
+from . import selfheal
 from . import upstream_proto as proto
 from .upstream_proto import (
     encode_keycode,
@@ -164,16 +165,33 @@ class UpstreamChannel:
                 "stay_awake=false",
             ]
             try:
-                self._server_proc = adb_device.shell(commands, stream=True)
-            except Exception as exc:
-                raise StreamUnavailable(f"启动上游 scrcpy server 失败:{exc}") from exc
-            try:
-                self._connect(adb_device, timeout)
-            except BaseException:
-                self._teardown()
-                raise
+                self._launch_and_connect(adb_device, commands, timeout)
+            except StreamUnavailable as exc:
+                # 启动/连接失败 → 残留自愈(双前缀:ma- comm 与 scid cmdline),
+                # 清得残留则重试一次;与 wetest 通道同语义(工单 02)
+                report = selfheal.kill_stale_servers(
+                    adb_device, serial=self._serial, own_mod_pid=self._host_mod
+                )
+                if report.killed == 0:
+                    raise StreamUnavailable(
+                        f"{exc};残留自愈未清得任何 server:{report.note}"
+                    ) from exc
+                self._launch_and_connect(adb_device, commands, timeout)
             self._device_pid = self._find_server_pid(adb_device)
             self._started = True
+            with selfheal.LIVE_PREFIXES_LOCK:
+                selfheal.LIVE_PREFIXES.add(self._sock_prefix)
+
+    def _launch_and_connect(self, adb_device, commands, timeout: float) -> None:
+        try:
+            self._server_proc = adb_device.shell(commands, stream=True)
+        except Exception as exc:
+            raise StreamUnavailable(f"启动上游 scrcpy server 失败:{exc}") from exc
+        try:
+            self._connect(adb_device, timeout)
+        except BaseException:
+            self._teardown()
+            raise
 
     def _connect(self, adb_device, timeout: float) -> None:
 
@@ -466,6 +484,8 @@ class UpstreamChannel:
             except Exception:
                 pass
             self._server_proc = None
+        with selfheal.LIVE_PREFIXES_LOCK:
+            selfheal.LIVE_PREFIXES.discard(self._sock_prefix)
 
 
 __all__ = ["UpstreamChannel", "upstream_asset"]

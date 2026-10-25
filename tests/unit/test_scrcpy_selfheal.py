@@ -11,6 +11,7 @@ wetest_scrcpy = pytest.importorskip("wetest.scrcpy", reason="stream extra 未安
 
 from mobile_auto.errors import StreamUnavailable  # noqa: E402
 from mobile_auto.stream import channel as scrcpy_channel  # noqa: E402
+from mobile_auto.stream import selfheal  # noqa: E402
 from mobile_auto.stream.channel import (  # noqa: E402
     HealReport,
     ScrcpyChannel,
@@ -191,7 +192,7 @@ def test_heal_normal_mode_spares_own_leftover_for_collision_safety(clean_live_pr
 
 
 def test_heal_degraded_mode_only_own_leftover(clean_live_prefixes, monkeypatch):
-    monkeypatch.setattr(scrcpy_channel, "_alive_host_mod_pids", lambda: None)
+    monkeypatch.setattr(selfheal, "alive_host_mod_pids", lambda: None)
     clean_live_prefixes.add(f"ma-{own_mod()}-3")  # 本进程活跃通道
     adb = HealAdbDevice(
         {
@@ -227,7 +228,7 @@ def test_start_heals_dead_residue_then_recovers(monkeypatch, clean_live_prefixes
     adb = HealAdbDevice({301: "ma-77777-1"})
     adb.on_kill = lambda: None
     monkeypatch.setattr(
-        scrcpy_channel, "_alive_host_mod_pids", lambda: {own_mod()}
+        selfheal, "alive_host_mod_pids", lambda: {own_mod()}
     )
     patch_wetest(monkeypatch, adb, ctrl_fails_while=lambda a: bool(a.servers))
     channel = ScrcpyChannel("SERIAL")
@@ -243,7 +244,7 @@ def test_start_without_healable_residue_raises_with_hint(
 ):
     adb = HealAdbDevice()  # 设备端无残留
     monkeypatch.setattr(
-        scrcpy_channel, "_alive_host_mod_pids", lambda: {own_mod()}
+        selfheal, "alive_host_mod_pids", lambda: {own_mod()}
     )
     patch_wetest(monkeypatch, adb, ctrl_fails_while=lambda a: True)
     channel = ScrcpyChannel("SERIAL")
@@ -269,7 +270,7 @@ def test_start_never_kills_live_channel_of_same_process(
 
     monkeypatch.setattr(adbutils.adb, "device", lambda serial: residue_adb)
     monkeypatch.setattr(
-        scrcpy_channel, "_alive_host_mod_pids", lambda: {own_mod()}
+        selfheal, "alive_host_mod_pids", lambda: {own_mod()}
     )
     state["busy"] = True
     channel_b = ScrcpyChannel("SERIAL")
@@ -285,7 +286,7 @@ def test_start_never_kills_live_channel_of_same_process(
 
 def test_heal_kills_dead_upstream_server(clean_live_prefixes, monkeypatch):
     monkeypatch.setattr(
-        scrcpy_channel, "_alive_host_mod_pids", lambda: {own_mod()}
+        selfheal, "alive_host_mod_pids", lambda: {own_mod()}
     )
     adb = HealAdbDevice({501: "scrcpy_0000dead"})
     report = scrcpy_channel._kill_stale_servers(
@@ -298,7 +299,7 @@ def test_heal_spares_live_upstream_channel(clean_live_prefixes, monkeypatch):
     live_scid = f"scrcpy_{(own_mod() << 8) | 7:08x}"
     clean_live_prefixes.add(live_scid)  # 本进程活跃上游通道
     monkeypatch.setattr(
-        scrcpy_channel, "_alive_host_mod_pids", lambda: {own_mod()}
+        selfheal, "alive_host_mod_pids", lambda: {own_mod()}
     )
     adb = HealAdbDevice({502: live_scid})
     report = scrcpy_channel._kill_stale_servers(
@@ -311,7 +312,7 @@ def test_heal_spares_live_upstream_channel(clean_live_prefixes, monkeypatch):
 def test_heal_mixed_backends_in_one_scan(clean_live_prefixes, monkeypatch):
     """wetest comm 残留与 upstream scid 残留同场:只杀宿主已死的。"""
     monkeypatch.setattr(
-        scrcpy_channel, "_alive_host_mod_pids", lambda: {own_mod(), 4242}
+        selfheal, "alive_host_mod_pids", lambda: {own_mod(), 4242}
     )
     adb = HealAdbDevice(
         {

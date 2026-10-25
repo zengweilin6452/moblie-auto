@@ -13,17 +13,25 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import struct
-import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import StreamUnavailable
+from . import selfheal
+from .selfheal import LIVE_PREFIXES_LOCK
+
+# 兼容别名(P2 工单 02 时期的私有名;自愈已提取 selfheal.py 由双通道共享)
+HealReport = selfheal.HealReport
+_LIVE_PREFIXES = selfheal.LIVE_PREFIXES
+_kill_stale_servers = selfheal.kill_stale_servers
+_parse_server_listing = selfheal.parse_server_listing
+_parse_upstream_listing = selfheal.parse_upstream_listing
+_alive_host_mod_pids = selfheal.alive_host_mod_pids
+_HOST_PID_MOD = selfheal.HOST_PID_MOD
 
 _ASSETS_DIR = Path(__file__).parent / "assets"
 _DEVICE_ROOT = "/data/local/tmp/ma-scrcpy"
@@ -31,17 +39,6 @@ _DEVICE_ROOT = "/data/local/tmp/ma-scrcpy"
 # (dlopen 报错路径即证据;自定义目录参数无效),so 必须推到该固定路径
 _LIBJPEG_REMOTE = "/data/local/tmp/udt/libjpeg-turbo.so"
 _START_TIMEOUT_SECONDS = 15.0
-_HOST_PID_MOD = 100_000  # socket 前缀里宿主 pid 的取模口径(见 _PREFIX_SEQ)
-# 残留扫描(P2 工单 02):wetest server 将自身进程名(comm)设为 socket
-# 前缀(真机实证:/proc/<pid>/comm == ma-<宿主pid模>-<序号>),据此一次
-# 往返枚举;comm 内容匹配无 shell 自匹配/引号风险(cmdline 方案在真机上
-# 不可行——java 进程 cmdline 不含启动参数)
-_SCAN_CMD = "grep -H -E '^ma-[0-9]+-[0-9]+$' /proc/[0-9]*/comm"
-_SERVER_RE = re.compile(r"/proc/(\d+)/comm:ma-(\d+)-(\d+)")
-# 本进程已启动未回收的前缀:同进程 driver/viewer 双通道共存时,
-# 自愈永不杀活跃表内的通道(工单 01 的每进程独立 server 决策)
-_LIVE_PREFIXES: set[str] = set()
-_LIVE_PREFIXES_LOCK = threading.Lock()
 # 触控消息包格式与 wetest CtrlConnection.touch 一致(协议 INJECT_TOUCH_EVENT);
 # 不直接用其 touch():它把 (x<=1,y<=1) 的像素误判为 0-1 比例坐标再放大
 _TOUCH_MSG = struct.Struct(">BqiiHHHi")
@@ -93,139 +90,6 @@ def _staged_for_push(path: Path) -> Path:
         return tmp
     return staged
 
-
-@dataclass(frozen=True)
-class HealReport:
-    """一次残留自愈的结果;killed=0 时 note 说明原因并附手动清理指引。"""
-
-    killed: int
-    skipped_alive: int
-    skipped_own: int
-    note: str
-
-
-def _alive_host_mod_pids() -> set[int] | None:
-    """本机存活进程 pid 的模值集合(与 socket 前缀同口径);失败返回 None。
-
-    空集与失败同义(按降级处理):把"没有进程存活"当真会把全部 server
-    误判为残留。
-    """
-    if os.name != "nt":
-        return None
-    try:
-        result = subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except Exception:
-        return None
-    if result.returncode != 0:
-        return None
-    pids: set[int] = set()
-    for line in result.stdout.splitlines():
-        fields = line.split('","')
-        if len(fields) < 2:
-            continue
-        try:
-            pids.add(int(fields[1].rstrip('"')) % _HOST_PID_MOD)
-        except ValueError:
-            continue
-    return pids or None
-
-
-_UPSTREAM_SCAN_CMD = (
-    "for p in $(pgrep -f 'com[.]genymobile[.]scrcpy[.]Server'); do "
-    "echo $p $(cat /proc/$p/cmdline 2>/dev/null | tr '\0' ' '); done"
-)
-_UPSTREAM_SCID_RE = re.compile(r"scid=([0-9a-f]{8})")
-
-
-def _parse_server_listing(output: str) -> list[tuple[int, int, str]]:
-    """解析 comm 扫描输出 → [(设备端 pid, 宿主 pid 模值, socket 前缀)]。"""
-    servers = []
-    for match in _SERVER_RE.finditer(output):
-        device_pid, mod_pid, seq = match.groups()
-        servers.append((int(device_pid), int(mod_pid), f"ma-{mod_pid}-{seq}"))
-    return servers
-
-
-def _parse_upstream_listing(output: str) -> list[tuple[int, int, str]]:
-    """解析上游 server 扫描 → [(pid, 宿主 pid 模值, scid socket 名)]。
-
-    cmdline 实证(app_process 本体 comm 被改写为 'main'):sh 壳与本体都
-    含 scid=;只登记本体的 pgrep 命中(壳随本体退出),socket 名即
-    scrcpy_<scid>(活跃表语义对齐 wetest 前缀)。
-    """
-    servers = []
-    for line in (output or "").splitlines():
-        parts = line.split(None, 1)
-        if len(parts) < 2:
-            continue
-        match = _UPSTREAM_SCID_RE.search(parts[1])
-        if not match:
-            continue
-        scid = int(match.group(1), 16)
-        prefix = f"scrcpy_{match.group(1)}"
-        servers.append((int(parts[0]), scid >> 8, prefix))
-    return servers
-
-
-def _kill_stale_servers(
-    adb_device, *, serial: str, own_mod_pid: int, alive_pids=None
-) -> HealReport:
-    """清理设备端残留 server;只杀宿主已死的,宁漏勿错。
-
-    正常模式(宿主存活枚举可用):宿主 pid 模值不在存活集 → 残留,杀;
-    降级模式(枚举失败):只认"本进程前缀且不在活跃表"的 server,其余
-    全部跳过。pid 取模碰撞/pid 复用的最坏结果是漏清(多留一个残留、
-    启动仍失败并附手动指引),不会误杀任何可能活跃的通道。
-    """
-    hint = (
-        f"adb -s {serial} shell pkill -f 'udt_socket_name=ma-'; "
-        f"adb -s {serial} shell pkill -f 'com.genymobile.scrcpy.Server'"
-    )
-    try:
-        listing = adb_device.shell(_SCAN_CMD)
-        upstream_listing = adb_device.shell(_UPSTREAM_SCAN_CMD)
-    except Exception as exc:
-        return HealReport(0, 0, 0, f"设备端残留扫描失败:{exc};手动清理:{hint}")
-    servers = _parse_server_listing(listing or "") + _parse_upstream_listing(
-        upstream_listing or ""
-    )
-    if not servers:
-        return HealReport(0, 0, 0, f"设备端无本包残留 server;如仍失败请手动清理:{hint}")
-    if alive_pids is None:
-        alive_pids = _alive_host_mod_pids()
-    degraded = alive_pids is None
-    killed = skipped_alive = skipped_own = kill_failed = 0
-    for device_pid, mod_pid, prefix in servers:
-        with _LIVE_PREFIXES_LOCK:
-            live = prefix in _LIVE_PREFIXES
-        if live or (not degraded and mod_pid == own_mod_pid):
-            # 活跃表内(同进程合法通道);正常模式下本进程遗留前缀同样
-            # 不杀——pid 取模碰撞时无法与他人的活跃 server 区分
-            skipped_own += 1
-            continue
-        stale = mod_pid == own_mod_pid if degraded else mod_pid not in alive_pids
-        if not stale:
-            skipped_alive += 1
-            continue
-        try:
-            adb_device.shell(f"kill {device_pid}")
-            killed += 1
-        except Exception:
-            kill_failed += 1
-    parts = [f"清理残留 {killed} 个", f"跳过 存活={skipped_alive} 本进程={skipped_own}"]
-    if degraded:
-        parts.append("宿主存活枚举失败,降级仅清本进程遗留")
-    if kill_failed:
-        parts.append(f"kill 失败 {kill_failed} 个")
-    note = ";".join(parts)
-    if killed == 0:
-        note += f";如仍失败请手动清理:{hint}"
-    return HealReport(killed, skipped_alive, skipped_own, note)
 
 
 class ScrcpyChannel:
@@ -331,8 +195,8 @@ class ScrcpyChannel:
                     ) from exc
                 self._launch_and_connect(adb_device, commands, timeout)  # 失败如实抛,不再叠加重试
             self._started = True
-            with _LIVE_PREFIXES_LOCK:
-                _LIVE_PREFIXES.add(self._sock_prefix)
+            with LIVE_PREFIXES_LOCK:
+                selfheal.LIVE_PREFIXES.add(self._sock_prefix)
 
     def _launch_and_connect(self, adb_device, commands, timeout: float) -> None:
         try:
@@ -427,8 +291,8 @@ class ScrcpyChannel:
             except Exception:
                 pass
             self._server_stream = None
-        with _LIVE_PREFIXES_LOCK:
-            _LIVE_PREFIXES.discard(self._sock_prefix)
+        with LIVE_PREFIXES_LOCK:
+            selfheal.LIVE_PREFIXES.discard(self._sock_prefix)
 
     def _adb_device(self):
         import adbutils

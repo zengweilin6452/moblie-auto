@@ -57,23 +57,49 @@ class FakeAdbConnection:
 
 
 class FakeAdbDevice:
-    """shell(stream) 返回假 server 流;create_connection 出内存 socket 对。"""
+    """shell(stream) 返回假 server 流;create_connection 出内存 socket 对。
+
+    残留模拟(P2 上游迁移自愈接线):upstream_residue={pid: scid_hex};
+    blocked=True 时 create_connection 拒绝(模拟残留占位),kill 掉全部
+    残留后解除。
+    """
 
     def __init__(self):
         self.pushes = []
         self.stream_closed = False
         self.connections = []
         self._pending: list[socket.socket] = []
+        self.upstream_residue: dict[int, str] = {}
+        self.blocked = False
+        self.kills: list[int] = []
 
     def shell(self, cmd, stream=False):
         if stream:
             return _FakeStream(self)
+        if isinstance(cmd, list):
+            cmd = " ".join(cmd)
+        if "pgrep" in cmd and "genymobile" in cmd:
+            lines = [
+                f"{pid} app_process / com.genymobile.scrcpy.Server 5.0.1 "
+                f"scid={scid} log_level=info video=true"
+                for pid, scid in sorted(self.upstream_residue.items())
+            ]
+            return chr(10).join(lines)
+        if cmd.startswith("kill "):
+            pid = int(cmd.split()[1])
+            self.kills.append(pid)
+            self.upstream_residue.pop(pid, None)
+            if not self.upstream_residue:
+                self.blocked = False  # 残留清空:连接恢复
+            return ""
         return ""
 
     def sync_push(self, src, dst):
         self.pushes.append(dst)
 
     def create_connection(self, network, addr):
+        if self.blocked:
+            raise OSError("connection refused (residue blocking)")
         client, server = socket.socketpair()
         conn = FakeAdbConnection(client)
         self.connections.append(conn)
@@ -376,3 +402,62 @@ def test_stop_closes_everything(fake_adb):
     assert channel._video_sock is None and channel._control_sock is None
     assert adb.stream_closed
     channel.stop()  # 幂等
+
+
+# ── 自愈接线(P2 上游迁移:启动失败 → 双前缀清理 → 重试)─────
+
+
+@pytest.fixture
+def _clean_live_prefixes():
+    from mobile_auto.stream import selfheal
+
+    selfheal.LIVE_PREFIXES.clear()
+    yield selfheal.LIVE_PREFIXES
+    selfheal.LIVE_PREFIXES.clear()
+
+
+def test_start_heals_upstream_residue_then_retries(fake_adb, monkeypatch, _clean_live_prefixes):
+    """启动被残留阻塞 → 自愈清死宿主残留 → 重试成功(与 wetest 同语义)。"""
+    from mobile_auto.stream import selfheal
+
+    own_mod = __import__("os").getpid() % 100_000
+    monkeypatch.setattr(selfheal, "alive_host_mod_pids", lambda: {own_mod})
+    fake_adb.upstream_residue = {9999: "0000dead"}  # 宿主 0xdead=57005 已死
+    fake_adb.blocked = True
+
+    channel = UpstreamChannel("SERIAL", scid=proto.encode_scid(own_mod, 3))
+    t = threading.Thread(target=channel.start, kwargs={"timeout": 1.0})
+    t.start()
+    # 自愈 kill 后连接恢复:等首个连接出现再喂 codec 头+会话元包
+    deadline = time.monotonic() + 8
+    while (
+        not fake_adb.connections or fake_adb.blocked
+    ) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not fake_adb.blocked, "自愈未清掉残留(kill 未生效)"
+    feed_video(channel, fake_adb, video_header() + session_meta(320, 640))
+    t.join(timeout=8)
+    assert not t.is_alive(), "start 未完成"
+    assert channel.started
+    assert fake_adb.kills == [9999]
+    assert channel._sock_prefix in _clean_live_prefixes  # 活跃表已登记
+    channel.stop()
+    assert channel._sock_prefix not in _clean_live_prefixes
+
+
+def test_start_without_healable_residue_raises_enhanced(
+    fake_adb, monkeypatch, _clean_live_prefixes
+):
+    """无可清残留:原错误附自愈说明与手动指引,不再重试。"""
+    from mobile_auto.stream import selfheal
+
+    own_mod = __import__("os").getpid() % 100_000
+    monkeypatch.setattr(selfheal, "alive_host_mod_pids", lambda: {own_mod})
+    fake_adb.blocked = True  # 连接被拒但扫描无残留(异因失败)
+
+    channel = UpstreamChannel("SERIAL", scid=proto.encode_scid(own_mod, 4))
+    with pytest.raises(StreamUnavailable, match="残留自愈未清得任何 server.*pkill"):
+        channel.start(timeout=0.5)
+    assert not channel.started
+    assert channel._sock_prefix not in _clean_live_prefixes  # 失败不登记
+    channel.stop()
