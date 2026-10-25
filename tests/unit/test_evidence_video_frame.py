@@ -10,6 +10,7 @@ from fakes import FakeBackend, make_session
 from mobile_auto import MobileConfig
 from mobile_auto.core.session import SessionState
 from mobile_auto.evidence.collector import collect_failure_evidence
+from mobile_auto.stream.supervisor import ServerSupervisor
 
 
 class FakeChannel:
@@ -27,6 +28,13 @@ class FakeChannel:
 
     def stop(self):
         self._healthy = False
+
+
+def _preset_channel(session, channel):
+    """预置已启动通道:取证尽力路径只读,不走 starter。"""
+    supervisor = ServerSupervisor(starter=lambda: channel)
+    supervisor._channel = channel
+    session._channel_supervisor = supervisor
 
 
 def _jpeg_bytes() -> bytes:
@@ -64,7 +72,7 @@ def test_video_frame_preferred(tmp_path):
         MobileConfig(device_serial="SERIAL1", artifacts_dir=tmp_path / "art"),
         _png_bytes(),
     )
-    session._scrcpy_channel = FakeChannel()
+    _preset_channel(session, FakeChannel())
     try:
         record = collect_failure_evidence(session, "boom", timeout=2.0)
         assert record["frame_source"]["source"] == "scrcpy-video"
@@ -86,7 +94,7 @@ def test_fallback_to_u2_when_channel_frame_fails(tmp_path):
         MobileConfig(device_serial="SERIAL1", artifacts_dir=tmp_path / "art"),
         _png_bytes(),
     )
-    session._scrcpy_channel = FakeChannel(fail=True)  # 健康但取帧失败
+    _preset_channel(session, FakeChannel(fail=True))  # 健康但取帧失败
     try:
         record = collect_failure_evidence(session, "boom", timeout=2.0)
         assert record["frame_source"]["source"] == "u2"

@@ -130,8 +130,8 @@ class DeviceSession:
         self._outcomes: dict[Future, str] = {}  # 完成操作的固化结局
         self._lease_held = False
         self._tls = threading.local()
-        # scrcpy 截图通道状态(P1 工单 03):仅设备队列线程读写,无需加锁
-        self._scrcpy_channel = None
+        # scrcpy 截图通道(P1 工单 03 / P2 工单 01):监督器仅设备队列线程读写
+        self._channel_supervisor = None
         self._scrcpy_failures = 0
         self._scrcpy_degraded_until = 0.0
 
@@ -217,20 +217,26 @@ class DeviceSession:
 
     def get_or_start_channel(self):
         """取可用通道,不健康则重建;须在设备队列线程内调用(租约已持有,
-        server 推送与启动属于设备写操作)。"""
-        if self._scrcpy_channel is not None and not self._scrcpy_channel.healthy():
-            self._scrcpy_channel.stop()
-            self._scrcpy_channel = None
-        if self._scrcpy_channel is None:
+        server 推送与启动属于设备写操作)。生命周期语义由 ServerSupervisor
+        提供(P2 工单 01):首用注册会话级用户,通道伴随会话、不空闲自停,
+        close 时随 shutdown 关停。"""
+        supervisor = self._channel_supervisor
+        if supervisor is None:
             from ..stream.channel import ScrcpyChannel
+            from ..stream.supervisor import ServerSupervisor
 
-            factory = self._channel_factory or (
-                lambda serial: ScrcpyChannel(serial)
+            factory = self._channel_factory or ScrcpyChannel
+            supervisor = ServerSupervisor(
+                starter=lambda: self._start_channel(factory)
             )
-            channel = factory(self._serial)
-            channel.start()
-            self._scrcpy_channel = channel
-        return self._scrcpy_channel
+            supervisor.acquire_user()  # 会话级用户:close 时随 shutdown 注销
+            self._channel_supervisor = supervisor
+        return supervisor.require()
+
+    def _start_channel(self, factory):
+        channel = factory(self._serial)
+        channel.start()
+        return channel
 
     def screenshot_bytes(self, backend) -> bytes:
         """驱动截图双通道策略(P1 工单 03);在设备队列线程内调用。
@@ -263,11 +269,11 @@ class DeviceSession:
         return png
 
     def healthy_channel(self):
-        """已存在且健康的 scrcpy 通道;不主动启动(证据取证等尽力场景)。"""
-        channel = self._scrcpy_channel
-        if channel is not None and channel.healthy():
-            return channel
-        return None
+        """已存在且健康的 scrcpy 通道;不主动启动、不回收(证据取证等尽力场景)。"""
+        supervisor = self._channel_supervisor
+        if supervisor is None:
+            return None
+        return supervisor.peek_healthy()
 
     def close(self, timeout: float = _CLOSE_DRAIN_TIMEOUT_SECONDS) -> None:
         """有界排空后关闭;幂等。超时进入 FAULTED 并保留租约(plan 7.3)。
@@ -308,12 +314,9 @@ class DeviceSession:
                 self._drain.wait(remaining)
         if backend is not None:
             backend.close()
-        if self._scrcpy_channel is not None:
-            try:
-                self._scrcpy_channel.stop()
-            except Exception:
-                pass
-            self._scrcpy_channel = None
+        if self._channel_supervisor is not None:
+            self._channel_supervisor.shutdown()
+            self._channel_supervisor = None
         if self._lease is not None and self._lease_held:
             self._lease.release()
             self._lease_held = False

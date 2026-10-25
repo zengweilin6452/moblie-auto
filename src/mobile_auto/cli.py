@@ -211,7 +211,12 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         return EXIT_CONFIG
     registry = _DeviceRegistry(config)  # 会话在首次被寻址时才连接设备
     app = create_app(registry=registry)
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
+    finally:
+        # Ctrl+C/停机信号经 uvicorn 优雅退出后,显式关停设备注册表:
+        # 停 scrcpy 通道与会话(P2 工单 01;atexit 为进程退出兜底)
+        registry.shutdown()
     return EXIT_OK
 
 

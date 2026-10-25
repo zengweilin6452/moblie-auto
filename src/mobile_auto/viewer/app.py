@@ -49,15 +49,18 @@ from ..errors import (
     UnsupportedOperation,
 )
 from ..stream.channel import ScrcpyChannel
+from ..stream.supervisor import (
+    IDLE_STOP_SECONDS,
+    RETRY_BACKOFF_INIT,
+    RETRY_BACKOFF_MAX,
+    ServerSupervisor,
+)
 from .candidates import candidates_for_node, xpath_candidate
 from .store import Snapshot, SnapshotStore
 
 _PREVIEW_INTERVAL_SECONDS = 1.0  # u2 截图回退档帧间隔
 _STREAM_INTERVAL_SECONDS = 0.1  # 视频流档帧间隔(目标 ~10fps)
 _MAX_WS_CLIENTS_PER_DEVICE = 4  # 同一设备的预览连接上限(按设备计数)
-_CHANNEL_IDLE_STOP_SECONDS = 30.0  # 无客户端后 server 自停
-_CHANNEL_RETRY_BACKOFF_INIT = 2.0
-_CHANNEL_RETRY_BACKOFF_MAX = 30.0
 
 _CAPTURE_TIMEOUT_SECONDS = 10.0
 _TREE_INTERVAL_LIMIT_SECONDS = 1.0  # 截图与树采集间隔超限判定(快照不一致)
@@ -93,134 +96,64 @@ def error_envelope(request: Request, status: int, code: str, message: str) -> JS
     )
 
 
-class _ChannelManager:
-    """viewer 进程内的 scrcpy 通道:懒启动、退避重试、空闲自停(工单 02)。
+class _ChannelManager(ServerSupervisor):
+    """viewer 进程内的 scrcpy 通道监督器:启动经租约短事务,预览客户端即用户。
 
     server 启动是设备写操作,经会话租约执行;租约被他人持有或启动失败
     都不致命——预览回退 u2 截图轮询,并按退避自动重试恢复视频流。
+    生命周期语义(保活/空闲自停/退避/回收)由 ServerSupervisor 统一提供
+    (P2 工单 01),本类只注入 viewer 的租约启动纪律与客户端计数。
     """
 
     def __init__(
         self,
         session: DeviceSession,
         *,
-        idle_stop: float = _CHANNEL_IDLE_STOP_SECONDS,
-        retry_init: float = _CHANNEL_RETRY_BACKOFF_INIT,
-        retry_max: float = _CHANNEL_RETRY_BACKOFF_MAX,
+        idle_stop: float = IDLE_STOP_SECONDS,
+        retry_init: float = RETRY_BACKOFF_INIT,
+        retry_max: float = RETRY_BACKOFF_MAX,
         channel_factory=None,
     ) -> None:
         self._session = session
-        self._idle_stop = idle_stop
-        self._retry_init = retry_init
-        self._retry_max = retry_max
         self._channel_factory = channel_factory  # None → 真实 ScrcpyChannel
-        self._lock = threading.Lock()
-        self._start_lock = threading.Lock()
-        self._channel: ScrcpyChannel | None = None
-        self._clients = 0
-        self._idle_timer: threading.Timer | None = None
-        self._next_retry = 0.0
-        self._backoff = retry_init
-        self._last_error: str | None = None
-
-    @property
-    def last_error(self) -> str | None:
-        with self._lock:
-            return self._last_error
+        super().__init__(
+            starter=self._start_via_lease,
+            idle_stop=idle_stop,
+            retry_init=retry_init,
+            retry_max=retry_max,
+        )
 
     @property
     def clients(self) -> int:
         """当前预览客户端数;用于每设备连接上限判定。"""
-        with self._lock:
-            return self._clients
+        return self.user_count
 
     def client_connected(self) -> None:
-        with self._lock:
-            self._clients += 1
-            if self._idle_timer is not None:
-                self._idle_timer.cancel()
-                self._idle_timer = None
+        self.acquire_user()
 
     def client_disconnected(self) -> None:
-        with self._lock:
-            self._clients = max(0, self._clients - 1)
-            if self._clients == 0 and self._idle_timer is None:
-                self._idle_timer = threading.Timer(self._idle_stop, self._stop_idle)
-                self._idle_timer.daemon = True
-                self._idle_timer.start()
+        self.release_user()
 
-    def _stop_idle(self) -> None:
-        with self._lock:
-            if self._clients == 0 and self._channel is not None:
-                self._channel.stop()
-                self._channel = None
-                self._backoff = self._retry_init
-
-    def invalidate(self, reason: str) -> None:
-        """通道损坏(空帧/连接断):回收并安排退避重试;本轮回退 u2。"""
-        with self._lock:
-            if self._channel is not None:
-                self._channel.stop()
-                self._channel = None
-            self._last_error = reason
-            self._next_retry = time.monotonic() + self._backoff
-            self._backoff = min(self._backoff * 2, self._retry_max)
-
-    def channel(self) -> ScrcpyChannel | None:
-        """可用通道;未启动/待重试则按退避懒启动(经租约)。"""
-        with self._lock:
-            if self._channel is not None:
-                return self._channel
-            if time.monotonic() < self._next_retry:
-                return None
-        if not self._start_lock.acquire(blocking=False):
-            return None  # 另一客户端正在启动,本轮先回退
-        try:
-            channel = self._start_via_lease()
-        finally:
-            self._start_lock.release()
-        return channel
-
-    def _start_via_lease(self) -> ScrcpyChannel | None:
+    def _start_via_lease(self) -> ScrcpyChannel:
+        """短事务启动:READY 时获取租约、启动后释放;本进程已持(LEASED)
+        如控制注入事务内,直接启动不重复获取。"""
         acquired = False
+        state = self._session.state
+        if state == SessionState.READY:
+            self._session.acquire_lease()
+            acquired = True
+        elif state != SessionState.LEASED:
+            raise DeviceUnavailable(f"会话状态 {state.value} 不允许启动视频流")
         try:
-            state = self._session.state
-            if state == SessionState.READY:
-                self._session.acquire_lease()
-                acquired = True
-            elif state != SessionState.LEASED:
-                raise DeviceUnavailable(f"会话状态 {state.value} 不允许启动视频流")
-            # 本进程已持租约(如控制注入短事务内):直接复用,不重复获取
-            try:
-                factory = self._channel_factory or (
-                    lambda serial: ScrcpyChannel(serial)
-                )
-                channel = factory(self._session.serial)
-                channel.start()
-            finally:
-                if acquired:
-                    self._session.release_lease()
-        except Exception as exc:
-            with self._lock:
-                self._last_error = f"视频流启动失败:{exc}"
-                self._next_retry = time.monotonic() + self._backoff
-                self._backoff = min(self._backoff * 2, self._retry_max)
-            return None
-        with self._lock:
-            self._channel = channel
-            self._last_error = None
-            self._backoff = self._retry_init
-        return channel
-
-    def shutdown(self) -> None:
-        """进程内显式回收(测试用);运行中依赖空闲计时与 shell 流 EOF 兜底。"""
-        with self._lock:
-            if self._idle_timer is not None:
-                self._idle_timer.cancel()
-                self._idle_timer = None
-            if self._channel is not None:
-                self._channel.stop()
-                self._channel = None
+            factory = self._channel_factory or (
+                lambda serial: ScrcpyChannel(serial)
+            )
+            channel = factory(self._session.serial)
+            channel.start()
+            return channel
+        finally:
+            if acquired:
+                self._session.release_lease()
 
 
 class _DeviceEntry:
@@ -376,7 +309,7 @@ def _build_stream_frame(
             "busy": False,
             "message": "设备会话未就绪,画面暂停;重连后自动恢复",
         }
-    channel = manager.channel()
+    channel = manager.get()
     if channel is not None:
         if not channel.healthy():
             manager.invalidate("scrcpy 通道不健康(连接断开或泵线程停止)")
@@ -846,7 +779,7 @@ def create_app(
         (经 _LeaseGuard 移交),失败时如实报错。
         """
         with _LeaseGuard(session) as guard:
-            channel = manager.channel()
+            channel = manager.get()
             if channel is None or not channel.healthy():
                 raise StreamUnavailable("视频流通道不可用,无法注入")
             _submit_bounded(

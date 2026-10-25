@@ -5,6 +5,7 @@
 视频帧(frame_source=scrcpy-video)。
 """
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -43,6 +44,9 @@ def test_plugin_attaches_video_frame_evidence(mobile_config):
             ],
             capture_output=True, text=True, timeout=180,
             cwd=Path(__file__).parents[2],
+            # 子进程禁用入口点自动加载:与显式 -p 并存会以两个名字注册同一
+            # 模块而报错(editable 安装入环境后触发)
+            env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
         )
     finally:
         child.unlink(missing_ok=True)

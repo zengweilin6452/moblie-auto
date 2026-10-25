@@ -137,7 +137,7 @@ def test_unhealthy_channel_recreated():
         session.get_or_start_channel()  # 首次:创建不健康通道
         session.get_or_start_channel()  # 再次:回收并重建
         assert unhealthy.stop_calls == 1
-        assert session._scrcpy_channel is healthy
+        assert session._channel_supervisor.peek_healthy() is healthy
     finally:
         session.close()
 

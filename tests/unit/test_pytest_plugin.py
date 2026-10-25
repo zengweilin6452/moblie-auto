@@ -5,9 +5,18 @@
 """
 
 
+import pytest
+
 pytest_plugins = ["pytester"]
 
 _PLUGIN = "mobile_auto.evidence.pytest_plugin"
+
+
+@pytest.fixture(autouse=True)
+def _no_plugin_autoload(monkeypatch):
+    """子进程禁用 entry point 自动加载:与显式 -p 加载并存时,
+    同一模块会以两个名字注册而报错(环境装有 editable 包时触发)。"""
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
 
 _CONFTEST = '''
 import io
