@@ -819,6 +819,15 @@ $("btn-copy").addEventListener("click", async () => {
   setTimeout(() => ($("btn-copy").textContent = "复制表达式"), 1200);
 });
 $("preview").addEventListener("click", pickAt);
+// 画面容器宽高比跟帧走(实时流帧与检查快照都经 load 事件覆盖):
+// 容器与图片内容完全重合,object-fit 黑边、overlay 偏移、坐标换算三者
+// 都不会出现 letterbox 错位;默认 9/19.5 仅首帧前兜底
+$("preview").addEventListener("load", () => {
+  const img = $("preview");
+  if (img.naturalWidth && img.naturalHeight) {
+    $("stage").style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
+  }
+});
 setupTabs();
 window.addEventListener("pagehide", () => freezeControl.release()); // 卸载前释放冻结引用
 refreshStatus();
