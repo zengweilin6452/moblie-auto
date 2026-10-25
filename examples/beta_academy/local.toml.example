@@ -10,3 +10,10 @@ app_activity = ".MainActivity"
 [launch_ready_target]
 by = "accessibility_id"
 value = "language"
+
+# 系统弹窗守卫(可选,默认关闭):等待预算耗尽时按白名单清理一次再重试。
+# 只接受 u2_selector 且必须带 packageName;只配"拒绝",不要配"允许"
+# (保持既有授权状态)。语义见 docs/integration.md §10。
+# [[dialog_guard]]
+# by = "u2_selector"
+# value = '{"packageName":"com.lbe.security.miui","text":"拒绝"}'

@@ -134,6 +134,10 @@ class DeviceSession:
         self._channel_supervisor = None
         self._scrcpy_failures = 0
         self._scrcpy_degraded_until = 0.0
+        # 弹窗守卫取证统计:适配器在预算耗尽时记录尝试与命中,证据原样带上;
+        # 只读快照对外暴露,写入用独立锁(读取方来自 pytest 线程)
+        self._dialog_guard_lock = threading.Lock()
+        self._dialog_guard_stats = {"attempts": 0, "dismissed": [], "last_at": None}
 
     @property
     def config(self) -> MobileConfig:
@@ -146,6 +150,24 @@ class DeviceSession:
     @property
     def serial(self) -> str | None:
         return self._serial
+
+    @property
+    def dialog_guard_stats(self) -> dict:
+        """弹窗守卫的只读统计:attempts 为清理尝试次数(含未命中),
+        dismissed 为历次命中的目标值,last_at 为最后一次尝试的 epoch 秒。"""
+        with self._dialog_guard_lock:
+            return {
+                "attempts": self._dialog_guard_stats["attempts"],
+                "dismissed": list(self._dialog_guard_stats["dismissed"]),
+                "last_at": self._dialog_guard_stats["last_at"],
+            }
+
+    def note_dialog_guard_attempt(self, dismissed: list[str]) -> None:
+        """登记一次清理尝试;由适配器在队列任务返回后调用。"""
+        with self._dialog_guard_lock:
+            self._dialog_guard_stats["attempts"] += 1
+            self._dialog_guard_stats["dismissed"].extend(dismissed)
+            self._dialog_guard_stats["last_at"] = time.time()
 
     # ── 生命周期 ─────────────────────────────────────────────
 

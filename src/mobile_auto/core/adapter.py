@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import math
 import threading
 import time
@@ -20,6 +21,7 @@ from typing import Any, TypeVar
 
 from ..contracts import ElementHandle, Target
 from ..errors import (
+    AmbiguousTarget,
     ConfigurationError,
     DeviceUnavailable,
     ElementNotFound,
@@ -51,6 +53,8 @@ _SCROLL_DIRECTIONS = frozenset({"up", "down", "left", "right"})
 _IMAGE_FRESH_SECONDS = 1.0  # 采集完成到发送点击的新鲜度上限(plan 6.2)
 
 _MISSING = object()  # 区分"本轮未找到"与找到的空值(如空字符串文本)
+
+logger = logging.getLogger("mobile_auto.dialog_guard")
 
 
 def _explicit_str(value: Any, field_name: str) -> str | None:
@@ -196,21 +200,81 @@ class MobileAdapter:
 
         attempt 每轮返回结果或 _MISSING;AmbiguousTarget 等终止性错误直接
         传播,不重试。取消在轮询间隙生效,取消后不再发起新一轮查询。
+
+        弹窗守卫(配置 dialog_guard 时):预算耗尽后在同一队列内按白名单
+        清理一次,命中则重置一次预算继续轮询;未命中则按原语义失败,不
+        额外等待。清理只发生在超时路径,不影响正常查询的轮询节奏。
         """
         config = self._session.config
         loop = asyncio.get_running_loop()
         deadline = loop.time() + config.wait_timeout
+        dismissed_once = False
+        dismissed: list[str] = []
         while True:
             result = await self._call(attempt)
             if result is not _MISSING:
                 return result
             remaining = deadline - loop.time()
             if remaining <= 0:
+                if not dismissed_once:
+                    dismissed_once = True
+                    dismissed = await self._dismiss_dialogs()
+                    if dismissed:
+                        deadline = loop.time() + config.wait_timeout
+                        continue
                 raise ElementNotFound(
                     f"{target.by.value}={target.value!r} 在 {config.wait_timeout} 秒内"
-                    "未出现可见唯一匹配"
+                    "未出现可见唯一匹配" + self._dialog_suffix(dismissed)
                 )
             await asyncio.sleep(min(config.poll_interval, remaining))
+
+    def _dismiss_dialogs_once(self, backend) -> list[str]:
+        """设备队列线程内执行:按白名单查找并点击系统弹窗,返回命中目标值。
+
+        白名单在配置层已强制 packageName 限定,不会命中业务页面的同名按钮;
+        匹配不唯一(含 index 越界)时跳过,不猜测。发送前过取消检查点,
+        与普通点击同一语义。
+        """
+        dismissed: list[str] = []
+        screen = backend.screen_size()
+        for target in self._session.config.dialog_guard:
+            matches = visible_only(
+                backend.find_elements(target.by, target.value), screen
+            )
+            if not matches:
+                continue
+            try:
+                node = resolve_single(matches, target)
+            except (ElementNotFound, AmbiguousTarget):
+                logger.warning("弹窗白名单 %r 匹配不唯一,跳过不点", target.value)
+                continue
+            self._session.send_checkpoint()
+            node.click()
+            dismissed.append(target.value)
+        return dismissed
+
+    async def _dismiss_dialogs(self) -> list[str]:
+        """预算耗尽时的一次性清理;未配置、会话故障或清理自身失败返回空,
+        绝不掩盖等待路径的原始错误。"""
+        if not self._session.config.dialog_guard:
+            return []
+        try:
+            dismissed = await self._call(self._dismiss_dialogs_once)
+        except Exception as exc:  # noqa: BLE001 - 清理失败不得掩盖原始超时
+            logger.warning("系统弹窗清理失败(%s);按原错误继续", type(exc).__name__)
+            return []
+        self._session.note_dialog_guard_attempt(dismissed)
+        return dismissed
+
+    @staticmethod
+    def _dialog_suffix(dismissed: list[str]) -> str:
+        """失败信息里如实标注已尝试清理,避免被误读为静默重试。"""
+        if not dismissed:
+            return ""
+        return (
+            f";已尝试清理系统弹窗(命中 {len(dismissed)} 个:"
+            f"{', '.join(dismissed)}),仍未见目标"
+        )
 
     async def goto(
         self,
@@ -266,14 +330,23 @@ class MobileAdapter:
         config = self._session.config
         loop = asyncio.get_running_loop()
         deadline = loop.time() + config.wait_timeout
+        dismissed_once = False
+        dismissed: list[str] = []
         while True:
             if await self.is_visible(ready_target):
                 return
             remaining = deadline - loop.time()
             if remaining <= 0:
+                if not dismissed_once:
+                    dismissed_once = True
+                    dismissed = await self._dismiss_dialogs()
+                    if dismissed:
+                        deadline = loop.time() + config.wait_timeout
+                        continue
                 raise WaitTimeout(
                     f"启动就绪目标 {ready_target.by.value}={ready_target.value!r}"
                     f" 在 {config.wait_timeout} 秒内未可见"
+                    + self._dialog_suffix(dismissed)
                 )
             await asyncio.sleep(min(config.poll_interval, remaining))
 
@@ -417,11 +490,23 @@ class MobileAdapter:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + budget
+        dismissed_once = False
+        dismissed: list[str] = []
         while True:
             if await self.is_visible(target):
                 return True
             remaining = deadline - loop.time()
             if remaining <= 0:
+                if not dismissed_once:
+                    dismissed_once = True
+                    dismissed = await self._dismiss_dialogs()
+                    if dismissed:
+                        deadline = loop.time() + budget
+                        continue
+                if dismissed:
+                    logger.info(
+                        "wait_for %r 未出现;已清理系统弹窗 %s", target.value, dismissed
+                    )
                 return False
             await asyncio.sleep(min(self._session.config.poll_interval, remaining))
 
@@ -434,7 +519,24 @@ class MobileAdapter:
         采集过期重采一次,仍过期失败)。
         """
         if target.by.value == "image":
-            await self._call(lambda backend: self._image_click_transaction(backend, target))
+            try:
+                await self._call(
+                    lambda backend: self._image_click_transaction(backend, target)
+                )
+            except ElementNotFound as exc:
+                # 图像路径没有轮询预算:弹窗盖住模板时会立即无匹配,
+                # 同样按"清理一次、命中才重试"处理。
+                dismissed = await self._dismiss_dialogs()
+                if not dismissed:
+                    raise
+                try:
+                    await self._call(
+                        lambda backend: self._image_click_transaction(backend, target)
+                    )
+                except ElementNotFound:
+                    raise ElementNotFound(
+                        f"{exc}{self._dialog_suffix(dismissed)}"
+                    ) from None
             return
 
         def attempt(backend):

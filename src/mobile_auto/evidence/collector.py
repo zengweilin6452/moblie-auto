@@ -96,6 +96,8 @@ def collect_failure_evidence(
             "serial": session.serial,
             "app_package": config.app_package,
             "screen_size": list(screen) if screen else None,
+            # 弹窗守卫统计:失败前是否清理过、命中什么;与"是否静默重试"无关
+            "dialog_guard": session.dialog_guard_stats,
         },
         "frame_source": frame_source,
         "artifacts": artifacts,

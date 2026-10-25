@@ -114,6 +114,7 @@ pytest tests/contract -q          # 本地参考契约核对
 | :--- | :--- | :--- |
 | 2026-10-24 | 15 方法 + platform;13 类错误;六种 Locator;语义以 plan 5.2/5.3 为准 | 工单 01–11 交付 |
 | 2026-10-25 | `goto` 新增可选 `package`/`activity` 显式覆盖(缺省沿用配置,行为向后兼容);`activity` 必须与 `package` 同时给出 | 同一会话切换被启动 App 的需要 |
+| 2026-10-25 | 新增可选配置 `dialog_guard`(契约外行为,默认关闭):预算耗尽时按白名单清理一次系统弹窗,命中才重试一次 | MIUI 权限弹窗随机挡住锚点等待(见 §10) |
 
 内网接入完成后追加:真实 Port 枚举值 ↔ 本地 Locator 映射表、行为差异
 (如 marker 默认值)、绑定层版本号。
@@ -166,6 +167,36 @@ pytest --mobile-evidence ...
 - 挂接内网真实报告:报告插件读取 `report.sections` 或
   `report.user_properties` 中的 `mobile_auto_evidence` 条目即可;
   不要求修改内网 conftest 之外的框架代码。
+
+## 10. 系统弹窗守卫(契约外行为,2026-10-25)
+
+MIUI 系统权限弹窗(`com.lbe.security.miui`)会随机挡住锚点等待,导致
+本可成功的步骤超时。守卫是**显式配置的可选行为**,默认关闭:
+
+```toml
+# 只配"拒绝/Reject"以保持既有授权状态;不要配"允许"。
+[[dialog_guard]]
+by = "u2_selector"
+value = '{"packageName":"com.lbe.security.miui","text":"拒绝"}'
+```
+
+语义:
+- 只在**等待预算耗尽**时触发:`click`/`input_text`/`get_text`/
+  `get_attribute`(经 `_poll_until`)、`wait_for`、`wait_for_load`,
+  以及图像点击首次无匹配;`is_visible` 仍是单次查询,不触发。
+- 每次操作最多清理一次;只有**实际点到**白名单弹窗才重置一次预算并重试,
+  未命中不延长等待。最坏耗时为 2× `wait_timeout`。
+- 白名单只接受 `u2_selector` 且必须带非空 `packageName`(配置层校验),
+  避免把业务页面的"取消/确定"误当弹窗;匹配不唯一时跳过,不猜。
+- 清理与普通点击同一语义:经设备会话队列串行、发送前过取消检查点;
+  失败证据 `meta.device.dialog_guard` 记录 `attempts`/`dismissed`/`last_at`,
+  失败信息注明"已尝试清理系统弹窗",不冒充静默重试。
+- ANR/崩溃对话框**不自动处理**:按原错误失败并留证据(自动点"等待"会
+  掩盖真实问题)。
+- 更彻底的方案是 setup 阶段预授权已知权限(`appops`/`pm grant`),让弹窗
+  不出现;守卫只作为不可预授权弹窗的兜底。
+
+回滚:删除 `dialog_guard` 配置即恢复原行为,无数据迁移。
 
 ## 并行执行与 CI 投屏接入(P2,2026-10-25)
 

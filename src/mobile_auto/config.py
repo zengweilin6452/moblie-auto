@@ -9,6 +9,9 @@ TOML 为可选的单一配置文件,路径由调用方(如 CLI --config)指定;
 未指定配置文件时基于工作目录;load_config 返回的两者均为绝对路径。
 launch_ready_target 用 TOML 表格表示
 (by/value,可选 index、confidence、region),by 取 Locator 的小写字符串值。
+dialog_guard 用 TOML 表格数组表示(每项同 launch_ready_target 形状),
+但只允许 u2_selector 且必须带非空 packageName:白名单必须限定到系统弹窗
+所属包,避免把业务页面的同名按钮(如"取消")误当成弹窗。
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ _TOML_FIELDS = frozenset(
         "artifacts_dir",
         "launch_ready_target",
         "allowed_deeplink_schemes",
+        "dialog_guard",
         "wait_timeout",
         "poll_interval",
         "port",
@@ -76,6 +80,9 @@ class MobileConfig:
     artifacts_dir: Path = Path("artifacts")
     launch_ready_target: Target | None = None
     allowed_deeplink_schemes: tuple[str, ...] = ()
+    # 系统弹窗白名单:等待预算耗尽时按序查找并点击命中项(仅 u2_selector,
+    # 且必须带 packageName 限定到系统弹窗所属包);空元组 = 完全关闭
+    dialog_guard: tuple[Target, ...] = ()
     wait_timeout: float = 10.0
     poll_interval: float = 0.5
     port: int = 8765
@@ -108,6 +115,9 @@ class MobileConfig:
             self,
             "allowed_deeplink_schemes",
             _schemes(self.allowed_deeplink_schemes, "allowed_deeplink_schemes"),
+        )
+        object.__setattr__(
+            self, "dialog_guard", _dialog_targets(self.dialog_guard, "dialog_guard")
         )
         object.__setattr__(
             self, "wait_timeout", _positive_float(self.wait_timeout, "wait_timeout")
@@ -193,6 +203,39 @@ def _positive_float(value: Any, field_name: str) -> float:
     return number
 
 
+def _dialog_targets(value: Any, field_name: str) -> tuple[Target, ...]:
+    """弹窗白名单:只接受以 packageName 限定的 u2 选择器。
+
+    业务页面同样可能出现"取消/确定"按钮,仅凭文本无法区分;把
+    packageName 设为必填,是从配置层面排除误点业务控件的唯一可靠约束。
+    """
+    if value in (None, (), []):
+        return ()
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        raise _invalid(field_name, "必须是 Target 列表")
+    from .core.selectors import parse_u2_selector
+
+    targets: list[Target] = []
+    for item in value:
+        if not isinstance(item, Target):
+            raise _invalid(field_name, "每一项都必须是 Target")
+        if item.by.value != "u2_selector":
+            raise _invalid(
+                field_name, "每项必须用 u2_selector(需 packageName 限定包名)"
+            )
+        try:
+            parsed = parse_u2_selector(item.value)
+        except InvalidTarget as exc:
+            raise _invalid(field_name, str(exc)) from exc
+        if not parsed.get("packageName"):
+            raise _invalid(
+                field_name,
+                "u2_selector 必须包含非空 packageName,避免误点业务页面的同名按钮",
+            )
+        targets.append(item)
+    return tuple(targets)
+
+
 def load_config(
     config_path: str | Path | None = None,
     *,
@@ -204,6 +247,7 @@ def load_config(
     artifacts_dir: Any = _UNSET,
     launch_ready_target: Any = _UNSET,
     allowed_deeplink_schemes: Any = _UNSET,
+    dialog_guard: Any = _UNSET,
     wait_timeout: Any = _UNSET,
     poll_interval: Any = _UNSET,
     port: Any = _UNSET,
@@ -222,6 +266,7 @@ def load_config(
         "artifacts_dir": artifacts_dir,
         "launch_ready_target": launch_ready_target,
         "allowed_deeplink_schemes": allowed_deeplink_schemes,
+        "dialog_guard": dialog_guard,
         "wait_timeout": wait_timeout,
         "poll_interval": poll_interval,
         "port": port,
@@ -248,6 +293,11 @@ def load_config(
     if isinstance(merged.get("launch_ready_target"), dict):
         merged["launch_ready_target"] = _target_from_toml(
             merged["launch_ready_target"], "launch_ready_target"
+        )
+    if isinstance(merged.get("dialog_guard"), list):
+        merged["dialog_guard"] = tuple(
+            _target_from_toml(item, "dialog_guard")
+            for item in merged["dialog_guard"]
         )
 
     base_dir = Path(config_path).resolve().parent if config_path else Path.cwd()

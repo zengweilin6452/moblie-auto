@@ -31,6 +31,7 @@ class StubSession:
         self._fail_submit = fail_submit
         self.submit_calls = 0
         self._scrcpy_channel = None  # P1 工单 06:取证用视频通道(默认无)
+        self.dialog_guard_stats = {"attempts": 0, "dismissed": [], "last_at": None}
 
     def healthy_channel(self):
         channel = self._scrcpy_channel
@@ -94,6 +95,7 @@ def test_evidence_written_and_registered(tmp_path):
         "serial": "SERIAL1",
         "app_package": "com.demo",
         "screen_size": [1080, 2400],
+        "dialog_guard": {"attempts": 0, "dismissed": [], "last_at": None},
     }
     kinds = {a["kind"] for a in meta["artifacts"]}
     assert kinds == {"operation-frame", "failure-frame", "ui-tree"}
