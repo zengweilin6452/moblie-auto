@@ -1,22 +1,28 @@
-"""pytest 失败证据钩子(P1 工单 06):opt-in,不开启零行为。
+"""pytest 失败证据钩子(P1 工单 06)+ 设备池/运行态钩子(P2 工单 05)。
 
-用法:pytest --mobile-evidence(内网或本地接入时挂上即可)。
-用例 call 阶段失败时,在本进程 funcargs 中寻找可用的 DeviceSession
-(优先名为 mobile_session 的 fixture,其次任意 DeviceSession 实例),
-调用失败取证并把证据路径写入 report.sections,兼容 pytest-html /
-junit 的 section 展示。取证失败不影响原始失败上报。
+--mobile-evidence:opt-in,不开启零行为。用例 call 阶段失败时,在本进程
+funcargs 中寻找可用的 DeviceSession(优先名为 mobile_session 的 fixture,
+其次任意 DeviceSession 实例),调用失败取证并把证据路径写入
+report.sections,兼容 pytest-html / junit 的 section 展示。取证失败不
+影响原始失败上报。会话生命周期归属调用方;本插件只读使用会话。
 
-会话生命周期归属调用方(通常为 session 级 fixture);本插件只读
-使用会话,不负责关闭。
+设备池(P2 工单 05):--mobile-devices 或配置 device_pool 启用池化
+mobile_session/mobile_adapter fixture——以跨进程租约为协调器非阻塞抢
+设备,xdist 下每 worker 各持一台、产物按 worker 分目录;池未配置时
+fixture 显式报错(不静默)。池化运行期间写 artifacts/runs/<worker>.json
+运行状态(工单 07 消费);conftest 同名 fixture 仍可整体覆盖。
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import os
 
 import pytest
 
 _SECTION_TITLE = "mobile-auto-evidence"
+_POOL_STATE: dict = {}  # 池化运行态(sessionstart 建立,finish 清空)
 
 
 def pytest_addoption(parser):
@@ -26,6 +32,136 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="用例失败时自动采集设备画面与 UI 树证据(mobile-auto)",
+    )
+    group.addoption(
+        "--mobile-devices",
+        action="store",
+        default=None,
+        metavar="SERIALS",
+        help="设备池候选(逗号分隔,覆盖配置 device_pool;启用池化 mobile_session)",
+    )
+
+
+# ── 设备池 fixture(P2 工单 05)───────────────────────────
+
+
+def _optional_getoption(config, name):
+    """读取可能由其他插件/conftest 定义的选项;未定义返回 None。"""
+    try:
+        return config.getoption(name, default=None)
+    except ValueError:
+        return None
+
+
+def _resolve_pool(pytest_config):
+    """旗标 --mobile-devices > TOML device_pool > 单值 device_serial。"""
+    from ..config import load_config
+
+    flag = pytest_config.getoption("--mobile-devices")
+    if flag:
+        pool = tuple(s.strip() for s in flag.split(",") if s.strip())
+    else:
+        config_path = _optional_getoption(pytest_config, "--mobile-config")
+        base = load_config(config_path)
+        pool = base.device_pool or (
+            (base.device_serial,) if base.device_serial else ()
+        )
+    return pool
+
+
+def _pool_base_config(pytest_config):
+    from ..config import load_config
+
+    config_path = _optional_getoption(pytest_config, "--mobile-config")
+    return load_config(config_path)
+
+
+@pytest.fixture(scope="session")
+def mobile_session(request):
+    """池化设备会话:抢池内一台设备的租约并绑定会话。
+
+    xdist worker 各自独立进程抢不同租约;artifacts 按 worker 分目录,
+    运行清单与失败证据互不覆盖。池未配置时报错(不静默回退单设备)。
+    """
+    from ..core.session import DeviceSession
+    from ..pool import acquire_from_pool, worker_artifacts_dir, write_run_state
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+    pool = _resolve_pool(request.config)
+    if not pool:
+        pytest.fail(
+            "mobile_session 需要设备池:提供 --mobile-devices 或在配置中"
+            "声明 device_pool(不静默回退)",
+            pytrace=False,
+        )
+    base = _pool_base_config(request.config)
+    serial, lease = acquire_from_pool(pool, worker=worker or "main")
+    config = dataclasses.replace(
+        base,
+        device_serial=serial,
+        artifacts_dir=worker_artifacts_dir(base.artifacts_dir, worker),
+    )
+    session = DeviceSession(config, lease_factory=lambda _serial: lease)
+    session.start()  # acquire 幂等:复用池已获取的租约
+    _POOL_STATE["serial"] = serial
+    write_run_state(
+        base.artifacts_dir / "runs",  # 状态文件固定在基础产物目录(工单 07 统一读)
+        worker=worker,
+        phase="running",
+        serial=serial,
+    )
+    yield session
+    session.close()  # 释放租约;释放不回滚已发送的操作
+    write_run_state(
+        base.artifacts_dir / "runs", worker=worker, phase="finished", serial=serial
+    )
+
+
+@pytest.fixture
+def mobile_adapter(mobile_session):
+    """function 级包装器:用例结束只释放包装器,会话由 mobile_session 持有。"""
+    from ..core.adapter import MobileAdapter
+
+    return MobileAdapter(mobile_session)
+
+
+# ── 运行状态记录(工单 07 数据源;仅池化运行时写)─────────
+
+
+def pytest_sessionstart(session):
+    global _POOL_STATE
+    if not _resolve_pool(session.config):
+        _POOL_STATE = {}
+        return
+    _POOL_STATE = {
+        "worker": os.environ.get("PYTEST_XDIST_WORKER", ""),
+        "config": session.config,
+        "base": _pool_base_config(session.config),
+        "serial": None,
+    }
+    _write_state(phase="started")
+
+
+def pytest_runtest_logstart(nodeid, location):
+    if _POOL_STATE:
+        _write_state(phase="running", current_test=nodeid)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _POOL_STATE:
+        _write_state(phase="finished")
+        _POOL_STATE.clear()
+
+
+def _write_state(*, phase: str, current_test: str | None = None) -> None:
+    from ..pool import write_run_state
+
+    write_run_state(
+        _POOL_STATE["base"].artifacts_dir / "runs",
+        worker=_POOL_STATE["worker"],
+        phase=phase,
+        serial=_POOL_STATE.get("serial"),
+        current_test=current_test,
     )
 
 

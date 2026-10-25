@@ -30,6 +30,7 @@ ENV_APP_ACTIVITY = "MOBILE_APP_ACTIVITY"
 _TOML_FIELDS = frozenset(
     {
         "device_serial",
+        "device_pool",
         "app_package",
         "app_activity",
         "assets_dir",
@@ -64,6 +65,9 @@ class MobileConfig:
     """合并后的运行配置;字段校验在构造时完成,非法值报 ConfigurationError。"""
 
     device_serial: str | None = None
+    # 设备池(P2 工单 05):并行执行时按序尝试获取租约的候选设备;
+    # 空元组表示未配置(单设备语义由 device_serial 承担)
+    device_pool: tuple[str, ...] = ()
     app_package: str | None = None
     app_activity: str | None = None
     assets_dir: Path = Path("assets")
@@ -82,6 +86,9 @@ class MobileConfig:
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "device_serial", _optional_str(self.device_serial, "device_serial")
+        )
+        object.__setattr__(
+            self, "device_pool", _serials(self.device_pool, "device_pool")
         )
         object.__setattr__(self, "app_package", _optional_str(self.app_package, "app_package"))
         object.__setattr__(self, "app_activity", _optional_str(self.app_activity, "app_activity"))
@@ -139,6 +146,22 @@ def _directory(value: Any, field_name: str) -> Path:
     return value
 
 
+def _serials(value: Any, field_name: str) -> tuple[str, ...]:
+    """非空字符串列表 → 去重保序元组(设备池候选)。"""
+    if value in (None, (), ""):
+        return ()
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise _invalid(field_name, "必须是字符串列表")
+    serials: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise _invalid(field_name, "每一项都必须是非空字符串")
+        item = item.strip()
+        if item not in serials:
+            serials.append(item)
+    return tuple(serials)
+
+
 def _schemes(value: Any, field_name: str) -> tuple[str, ...]:
     if isinstance(value, str) or not isinstance(value, (list, tuple)):
         raise _invalid(field_name, "必须是字符串列表")
@@ -163,6 +186,7 @@ def load_config(
     config_path: str | Path | None = None,
     *,
     device_serial: Any = _UNSET,
+    device_pool: Any = _UNSET,
     app_package: Any = _UNSET,
     app_activity: Any = _UNSET,
     assets_dir: Any = _UNSET,
@@ -179,6 +203,7 @@ def load_config(
     toml_data = _read_toml(config_path)
     explicit = {
         "device_serial": device_serial,
+        "device_pool": device_pool,
         "app_package": app_package,
         "app_activity": app_activity,
         "assets_dir": assets_dir,

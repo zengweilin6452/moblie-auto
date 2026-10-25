@@ -40,3 +40,6 @@ tests/device/assets/
 
 # ── 运行产物(根目录 assets 为调试时残留的模板资产库)──
 /assets/
+
+# 运行产物(证据/运行状态;模板资产在 assets/)
+artifacts/
