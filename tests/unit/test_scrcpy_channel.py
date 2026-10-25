@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import struct
+import tempfile
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -182,6 +184,41 @@ def test_missing_asset_raises(monkeypatch, tmp_path):
     channel = ScrcpyChannel("SERIAL")
     with pytest.raises(StreamUnavailable, match="fetch_scrcpy_server"):
         channel.start()
+
+
+def test_start_pushes_staged_copy(fakes, monkeypatch, tmp_path):
+    """内网限制:push 源是临时目录暂存副本,内容与包内资产逐字节一致。"""
+    staging = tmp_path / "mobile_auto-push"
+    monkeypatch.setattr(scrcpy_channel, "_PUSH_STAGING_DIR", staging)
+    started_channel(fakes)
+    srcs = {Path(src) for src, _ in fakes.adb.pushes}
+    assert srcs == {
+        staging / "scrcpy-server",
+        staging / "libjpeg-turbo.so",
+    }
+    for src in srcs:
+        assert src.read_bytes() == (scrcpy_channel._ASSETS_DIR / src.name).read_bytes()
+
+
+def test_staging_unwritable_falls_back_to_asset(fakes, monkeypatch, tmp_path):
+    """暂存目录不可写时回退直推原资产路径,启动不失败。"""
+    monkeypatch.setattr(
+        scrcpy_channel, "_PUSH_STAGING_DIR", tmp_path / "blocker"
+    )
+    (tmp_path / "blocker").write_text("not-a-dir")
+    started_channel(fakes)
+    srcs = {Path(src) for src, _ in fakes.adb.pushes}
+    assert srcs == {
+        scrcpy_channel._ASSETS_DIR / "scrcpy-server",
+        scrcpy_channel._ASSETS_DIR / "libjpeg-turbo.so",
+    }
+
+
+def test_push_staging_dir_resolves_user_temp():
+    """兼容不同电脑用户名:暂存目录解析自当前登录用户的系统临时目录。"""
+    assert scrcpy_channel._PUSH_STAGING_DIR.parent == Path(
+        tempfile.gettempdir()
+    ).resolve()
 
 
 # ── 注入:像素坐标打包 ─────────────────────────────────────

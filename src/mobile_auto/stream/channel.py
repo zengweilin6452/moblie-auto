@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -53,6 +55,43 @@ def _asset(name: str) -> Path:
             f"缺少 scrcpy 资产 {name};先运行 python scripts/fetch_scrcpy_server.py"
         )
     return path
+
+
+# 内网部署兼容:受限内网里 adb 直推工作区/安装目录下的文件会失败,须先把
+# 资产复制进用户临时目录再推。gettempdir() 按当前登录用户解析(即
+# C:\Users\<用户名>\AppData\Local\Temp),不同电脑用户名不同也通用;
+# resolve() 展开 TEMP 里的 8.3 短路径形式(如 WILLIA~1),落成与手动
+# 复制一致的完整用户路径。
+_PUSH_STAGING_DIR = (
+    Path(tempfile.gettempdir()).resolve() / "mobile_auto-push"
+)
+
+
+def _staged_for_push(path: Path) -> Path:
+    """返回待推资产的临时目录副本路径;暂存失败回退原路径直推。
+
+    先写 mkstemp 临时名再 os.replace 原子落位到固定名:viewer 与 pytest
+    多进程并发启动通道时,读方要么见旧完整文件要么见新完整文件,不会
+    推出半截副本;replace 被并发读占用(Windows 共享冲突)时改推这份
+    独立副本。每次 start 都重拷,资产升级不留陈旧副本;副本交由系统
+    临时目录回收,不做主动清理。
+    """
+    try:
+        _PUSH_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"{path.name}.", suffix=".tmp", dir=_PUSH_STAGING_DIR
+        )
+        os.close(fd)
+        tmp = Path(tmp_name)
+        shutil.copyfile(path, tmp)
+    except Exception:
+        return path
+    staged = _PUSH_STAGING_DIR / path.name
+    try:
+        os.replace(tmp, staged)
+    except OSError:
+        return tmp
+    return staged
 
 
 @dataclass(frozen=True)
@@ -218,8 +257,9 @@ class ScrcpyChannel:
         with self._lock:
             if self._started:
                 return
-            jar_local = _asset("scrcpy-server")
-            so_local = _asset("libjpeg-turbo.so")
+            # 内网限制:直推包目录路径会失败,先复制进用户临时目录再推
+            jar_local = _staged_for_push(_asset("scrcpy-server"))
+            so_local = _staged_for_push(_asset("libjpeg-turbo.so"))
             adb_device = self._adb_device()
             jar_remote = f"{_DEVICE_ROOT}/scrcpy-server.jar"
             try:
