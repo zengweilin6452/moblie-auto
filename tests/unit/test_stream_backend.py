@@ -7,7 +7,7 @@ from mobile_auto.stream import channel_factory as make_factory
 
 
 def test_config_default_and_validation():
-    assert MobileConfig().stream_backend == "wetest"
+    assert MobileConfig().stream_backend == "upstream"  # SU-03 双真机验收后翻转
     with pytest.raises(Exception, match="stream_backend"):
         MobileConfig(stream_backend="h264")
     config = MobileConfig(stream_backend="upstream")

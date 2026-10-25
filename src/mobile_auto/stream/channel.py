@@ -135,12 +135,40 @@ def _alive_host_mod_pids() -> set[int] | None:
     return pids or None
 
 
+_UPSTREAM_SCAN_CMD = (
+    "for p in $(pgrep -f 'com[.]genymobile[.]scrcpy[.]Server'); do "
+    "echo $p $(cat /proc/$p/cmdline 2>/dev/null | tr '\0' ' '); done"
+)
+_UPSTREAM_SCID_RE = re.compile(r"scid=([0-9a-f]{8})")
+
+
 def _parse_server_listing(output: str) -> list[tuple[int, int, str]]:
     """解析 comm 扫描输出 → [(设备端 pid, 宿主 pid 模值, socket 前缀)]。"""
     servers = []
     for match in _SERVER_RE.finditer(output):
         device_pid, mod_pid, seq = match.groups()
         servers.append((int(device_pid), int(mod_pid), f"ma-{mod_pid}-{seq}"))
+    return servers
+
+
+def _parse_upstream_listing(output: str) -> list[tuple[int, int, str]]:
+    """解析上游 server 扫描 → [(pid, 宿主 pid 模值, scid socket 名)]。
+
+    cmdline 实证(app_process 本体 comm 被改写为 'main'):sh 壳与本体都
+    含 scid=;只登记本体的 pgrep 命中(壳随本体退出),socket 名即
+    scrcpy_<scid>(活跃表语义对齐 wetest 前缀)。
+    """
+    servers = []
+    for line in (output or "").splitlines():
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        match = _UPSTREAM_SCID_RE.search(parts[1])
+        if not match:
+            continue
+        scid = int(match.group(1), 16)
+        prefix = f"scrcpy_{match.group(1)}"
+        servers.append((int(parts[0]), scid >> 8, prefix))
     return servers
 
 
@@ -154,12 +182,18 @@ def _kill_stale_servers(
     全部跳过。pid 取模碰撞/pid 复用的最坏结果是漏清(多留一个残留、
     启动仍失败并附手动指引),不会误杀任何可能活跃的通道。
     """
-    hint = f"adb -s {serial} shell pkill -f 'udt_socket_name=ma-'"
+    hint = (
+        f"adb -s {serial} shell pkill -f 'udt_socket_name=ma-'; "
+        f"adb -s {serial} shell pkill -f 'com.genymobile.scrcpy.Server'"
+    )
     try:
         listing = adb_device.shell(_SCAN_CMD)
+        upstream_listing = adb_device.shell(_UPSTREAM_SCAN_CMD)
     except Exception as exc:
         return HealReport(0, 0, 0, f"设备端残留扫描失败:{exc};手动清理:{hint}")
-    servers = _parse_server_listing(listing or "")
+    servers = _parse_server_listing(listing or "") + _parse_upstream_listing(
+        upstream_listing or ""
+    )
     if not servers:
         return HealReport(0, 0, 0, f"设备端无本包残留 server;如仍失败请手动清理:{hint}")
     if alive_pids is None:

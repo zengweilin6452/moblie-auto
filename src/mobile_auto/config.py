@@ -84,10 +84,10 @@ class MobileConfig:
     # 注入通道(scroll/图像点击发送/press_key back/home 与 adapter.device):
     # 同一语义;u2 可钉死时序敏感用例(手势插值 u2 在设备侧、scrcpy 在主机侧)
     injection_source: str = "auto"
-    # 视频流通道后端(P2 上游迁移):wetest=内嵌协议 fork(Android<17);
-    # upstream=上游官方 server v5.0.1(Android 17 兼容);默认 wetest 至
-    # SU-03 双真机验收后翻转
-    stream_backend: str = "wetest"
+    # 视频流通道后端(P2 上游迁移):upstream=上游官方 server v5.0.1
+    # (Android 16 QPR2+/17 兼容,Apache-2.0,双真机验收通过后为默认);
+    # wetest=内嵌协议 fork(Android<17,保留为回退选项)
+    stream_backend: str = "upstream"
 
     def __post_init__(self) -> None:
         object.__setattr__(

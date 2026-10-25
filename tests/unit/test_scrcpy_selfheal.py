@@ -66,6 +66,18 @@ class HealAdbDevice:
             f"/proc/{pid}/comm:{prefix}" for pid, prefix in sorted(self.servers.items())
         )
 
+    def _upstream_listing(self) -> str:
+        """上游 server 条目:cmdline 行(scid 形式;实证 app_process comm='main')。"""
+        lines = []
+        for pid, prefix in sorted(self.servers.items()):
+            if prefix.startswith("scrcpy_"):
+                scid = prefix.removeprefix("scrcpy_")
+                lines.append(
+                    f"{pid} app_process / com.genymobile.scrcpy.Server 5.0.1 "
+                    f"scid={scid} log_level=info video=true"
+                )
+        return "\n".join(lines)
+
     def shell(self, cmd, stream=False):
         if stream:
             self.launches += 1
@@ -77,6 +89,11 @@ class HealAdbDevice:
             if self.scan_error:
                 raise RuntimeError("adb 探测失败")
             return self._listing()
+        if "pgrep" in cmd and "genymobile" in cmd:
+            self.scans += 1
+            if self.scan_error:
+                raise RuntimeError("adb 探测失败")
+            return self._upstream_listing()
         if cmd.startswith("kill "):
             pid = int(cmd.split()[1])
             self.kills.append(pid)
@@ -261,3 +278,50 @@ def test_start_never_kills_live_channel_of_same_process(
     assert channel_a.started and channel_a.healthy()
     channel_b.stop()
     channel_a.stop()
+
+
+# ── 上游 server(scid)残留与双前缀共存(P2 上游迁移)───────
+
+
+def test_heal_kills_dead_upstream_server(clean_live_prefixes, monkeypatch):
+    monkeypatch.setattr(
+        scrcpy_channel, "_alive_host_mod_pids", lambda: {own_mod()}
+    )
+    adb = HealAdbDevice({501: "scrcpy_0000dead"})
+    report = scrcpy_channel._kill_stale_servers(
+        adb, serial="S", own_mod_pid=own_mod()
+    )
+    assert report.killed == 1 and adb.kills == [501]
+
+
+def test_heal_spares_live_upstream_channel(clean_live_prefixes, monkeypatch):
+    live_scid = f"scrcpy_{(own_mod() << 8) | 7:08x}"
+    clean_live_prefixes.add(live_scid)  # 本进程活跃上游通道
+    monkeypatch.setattr(
+        scrcpy_channel, "_alive_host_mod_pids", lambda: {own_mod()}
+    )
+    adb = HealAdbDevice({502: live_scid})
+    report = scrcpy_channel._kill_stale_servers(
+        adb, serial="S", own_mod_pid=own_mod()
+    )
+    assert report.killed == 0 and adb.kills == []
+    assert report.skipped_own == 1
+
+
+def test_heal_mixed_backends_in_one_scan(clean_live_prefixes, monkeypatch):
+    """wetest comm 残留与 upstream scid 残留同场:只杀宿主已死的。"""
+    monkeypatch.setattr(
+        scrcpy_channel, "_alive_host_mod_pids", lambda: {own_mod(), 4242}
+    )
+    adb = HealAdbDevice(
+        {
+            601: "ma-99999-1",       # wetest 残留(宿主死)→ 杀
+            602: "ma-4242-1",        # wetest 他进程存活 → 跳过
+            603: "scrcpy_0000beef",  # upstream 残留(宿主 0xbeef 死)→ 杀
+        }
+    )
+    report = scrcpy_channel._kill_stale_servers(
+        adb, serial="S", own_mod_pid=own_mod()
+    )
+    assert report.killed == 2 and sorted(adb.kills) == [601, 603]
+    assert report.skipped_alive == 1
