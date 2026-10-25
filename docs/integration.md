@@ -11,7 +11,7 @@ OpenCV 共存验证步骤。GLOSSARY"参考契约/绑定层"为术语依据。
 
 | 方法 | 签名摘要 | 本地语义(详见 plan 5.3) |
 | :--- | :--- | :--- |
-| goto | `(target: str = "")` | 空串冷启动配置 App;非空按 Deep Link 白名单 |
+| goto | `(target: str = "", package=None, activity=None)` | 空串冷启动 App(package/activity 显式覆盖配置);非空按 Deep Link 白名单 |
 | wait_for_load | `()` | 仅等待配置 launch_ready_target,超时 WaitTimeout |
 | back / press_key | `()` / `(name)` | 有限键表 back/home/enter/search/delete/recent |
 | click | `(target: Target)` | 单目标,预算内等待;IMAGE 走单事务 |
@@ -113,6 +113,7 @@ pytest tests/contract -q          # 本地参考契约核对
 | 日期 | 契约内容 | 依据 |
 | :--- | :--- | :--- |
 | 2026-10-24 | 15 方法 + platform;13 类错误;六种 Locator;语义以 plan 5.2/5.3 为准 | 工单 01–11 交付 |
+| 2026-10-25 | `goto` 新增可选 `package`/`activity` 显式覆盖(缺省沿用配置,行为向后兼容);`activity` 必须与 `package` 同时给出 | 同一会话切换被启动 App 的需要 |
 
 内网接入完成后追加:真实 Port 枚举值 ↔ 本地 Locator 映射表、行为差异
 (如 marker 默认值)、绑定层版本号。

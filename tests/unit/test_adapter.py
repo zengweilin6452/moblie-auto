@@ -273,6 +273,50 @@ async def test_goto_without_app_package_is_configuration_error():
         await adapter.goto("")
 
 
+async def test_goto_explicit_package_overrides_config():
+    """显式 package/activity 优先于配置:同一会话可切换被启动的 App。"""
+    config = MobileConfig(
+        device_serial="SERIAL1", app_package="com.demo", app_activity=".MainActivity"
+    )
+    adapter, backend = make_adapter(config=config)
+    await adapter.goto("", package="com.other", activity=".OtherActivity")
+    assert backend.app_starts == [("com.other", ".OtherActivity", True)]
+
+
+async def test_goto_explicit_package_without_activity_uses_none():
+    """只给 package 时 activity 为空:交给 am start 按默认入口处理。"""
+    config = MobileConfig(device_serial="SERIAL1", app_package="com.demo")
+    adapter, backend = make_adapter(config=config)
+    await adapter.goto("", package="com.other")
+    assert backend.app_starts == [("com.other", None, True)]
+
+
+async def test_goto_explicit_package_works_without_config_app():
+    """配置里没有 App 时,显式参数单独成立(不要求先配 app_package)。"""
+    adapter, backend = make_adapter()
+    await adapter.goto("", package="com.other", activity=".MainActivity")
+    assert backend.app_starts == [("com.other", ".MainActivity", True)]
+
+
+async def test_goto_activity_without_package_is_configuration_error():
+    """activity 脱离包名无意义:显式给 activity 必须同时给 package。"""
+    config = MobileConfig(
+        device_serial="SERIAL1", app_package="com.demo", app_activity=".MainActivity"
+    )
+    adapter, _ = make_adapter(config=config)
+    with pytest.raises(ConfigurationError, match="必须同时传 package"):
+        await adapter.goto("", activity=".OtherActivity")
+
+
+async def test_goto_rejects_non_string_package():
+    """显式参数沿用配置层校验口径:类型错误立即报配置错误。"""
+    adapter, _ = make_adapter()
+    with pytest.raises(ConfigurationError, match="package"):
+        await adapter.goto("", package=123)  # type: ignore[arg-type]
+    with pytest.raises(ConfigurationError, match="package"):
+        await adapter.goto("", package="   ")
+
+
 async def test_image_click_without_registered_template_rejected():
     """IMAGE 点击未登记模板:显式 InvalidTemplate,不静默或误报不支持。"""
     adapter, _ = make_adapter()

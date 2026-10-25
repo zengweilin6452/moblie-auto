@@ -112,7 +112,7 @@
 | 接口 | 兼容要求与首版职责 |
 | :--- | :--- |
 | `platform` | 返回 `"android"` |
-| `goto(url) -> None` | App 启动或 Deep Link；空值启动、链接格式与允许范围待核对，不能把任意字符串当 shell 命令 |
+| `goto(url, package=None, activity=None) -> None` | App 启动或 Deep Link；空值启动、链接格式与允许范围待核对，不能把任意字符串当 shell 命令；package/activity 显式覆盖配置(用于同一会话切换被启动 App)，缺省沿用配置 |
 | `wait_for_load(timeout=30.0) -> None` | 仅承担 App 启动就绪：等待配置的启动就绪目标；业务页面就绪由页面对象显式 `wait_for` 表达；内网绑定时核对真实调用点语义，不以固定 sleep 或“进程存在”冒充加载完成 |
 | `back() -> None` | Android 返回操作 |
 | `click(target: Target \| ElementHandle) -> None` | 支持原生定位和 IMAGE；成功表示操作已发送，不代表业务已成功 |

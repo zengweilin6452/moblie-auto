@@ -53,6 +53,15 @@ _IMAGE_FRESH_SECONDS = 1.0  # 采集完成到发送点击的新鲜度上限(plan
 _MISSING = object()  # 区分"本轮未找到"与找到的空值(如空字符串文本)
 
 
+def _explicit_str(value: Any, field_name: str) -> str | None:
+    """显式传入的包名/activity 类型校验;空串归一为 None 表示"未给出"。"""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigurationError(f"{field_name} 必须是非空字符串或空")
+    return value
+
+
 class _TemplateCache:
     """资产解析缓存(P2):键 (资产根, 逻辑名),清单 version_id 变化即失效。
 
@@ -203,9 +212,19 @@ class MobileAdapter:
                 )
             await asyncio.sleep(min(config.poll_interval, remaining))
 
-    async def goto(self, target: str = "") -> None:
-        """空串冷启动已配置 package/activity(先停止再启动,起点确定);
-        非空按 Deep Link 白名单校验后经参数化 ADB 调用打开。
+    async def goto(
+        self,
+        target: str = "",
+        package: str | None = None,
+        activity: str | None = None,
+    ) -> None:
+        """空串冷启动 App(先停止再启动,起点确定);非空按 Deep Link 白名单
+        校验后经参数化 ADB 调用打开。
+
+        package/activity 为显式覆盖:给出时优先于配置的 app_package/
+        app_activity(用于同一会话切换被启动的 App);两者都不给时沿用配置。
+        只给 activity 不给 package 属配置错误——activity 的有无不能脱离包名谈。
+        Deep Link 分支不使用这两个参数。
 
         白名单为空(默认)时任何链接都立即报配置错误(plan 5.3);
         不接受 shell 字符串,uri 作为独立参数传递。
@@ -220,12 +239,16 @@ class MobileAdapter:
             await self._call(lambda backend: backend.open_deeplink(target))
             return
         config = self._session.config
-        if not config.app_package:
+        package = _explicit_str(package, "package")
+        activity = _explicit_str(activity, "activity")
+        if activity is not None and package is None:
+            raise ConfigurationError("goto 显式传 activity 时必须同时传 package")
+        package = package if package is not None else config.app_package
+        activity = activity if activity is not None else config.app_activity
+        if not package:
             raise ConfigurationError("未配置 app_package,无法启动 App")
         await self._call(
-            lambda backend: backend.app_start(
-                config.app_package, config.app_activity, stop=True
-            )
+            lambda backend: backend.app_start(package, activity, stop=True)
         )
 
     async def wait_for_load(self) -> None:
