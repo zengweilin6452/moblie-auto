@@ -109,7 +109,11 @@ def mobile_session(request):
         artifacts_dir=worker_artifacts_dir(base.artifacts_dir, worker),
     )
     session = DeviceSession(config, lease_factory=lambda _serial: lease)
-    session.start()  # acquire 幂等:复用池已获取的租约
+    try:
+        session.start()  # acquire 幂等:复用池已获取的租约
+    except BaseException:
+        lease.release()  # resolve 阶段抛错时 start 不触碰租约:补释放防泄漏
+        raise
     _POOL_STATE["serial"] = serial
     write_run_state(
         base.artifacts_dir / "runs",  # 状态文件固定在基础产物目录(工单 07 统一读)
