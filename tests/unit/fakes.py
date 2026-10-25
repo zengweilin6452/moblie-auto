@@ -218,6 +218,12 @@ class FakeChannel:
     def touch_up(self, x: int, y: int) -> None:
         self._record("up", x, y)
 
+    def press_key(self, name: str) -> None:
+        exc = self.fail_on.get(f"press:{name}")
+        if exc is not None:
+            raise exc
+        self.events.append(("press", name, 0))
+
 
 def make_adapter(
     config: MobileConfig | None = None,

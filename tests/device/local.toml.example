@@ -22,3 +22,8 @@ value = "搜索系统设置项"
 # 驱动截图通道(P1):auto=scrcpy 优先、故障回退 u2(默认);u2=强制;
 # scrcpy=强制且故障如实报错。详见 docs/validation.md P1 章节。
 # screenshot_source = "auto"
+
+# 注入通道(2026-10-25):契约 scroll/图像点击发送/press_key back/home 与
+# adapter.device 手势的通道选择,语义同 screenshot_source;u2 可钉死时序
+# 敏感用例(手势插值 u2 在设备侧、scrcpy 在主机侧)。默认 auto。
+# injection_source = "auto"

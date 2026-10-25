@@ -256,16 +256,11 @@ class DeviceSession:
         try:
             png = self.get_or_start_channel().capture_png()
         except Exception:
-            self._scrcpy_failures += 1
-            if self._scrcpy_failures >= _SCRCPY_FAIL_LIMIT:
-                self._scrcpy_degraded_until = (
-                    time.monotonic() + _SCRCPY_DEGRADE_SECONDS
-                )
+            self._note_channel_failure()
             if source == "scrcpy":
                 raise  # 显式选择:故障如实报错,不静默换通道
             return backend.screenshot_png()
-        self._scrcpy_failures = 0
-        self._scrcpy_degraded_until = 0.0
+        self._note_channel_success()
         return png
 
     def healthy_channel(self):
@@ -274,6 +269,101 @@ class DeviceSession:
         if supervisor is None:
             return None
         return supervisor.peek_healthy()
+
+    # ── 注入双通道(scroll/图像点击发送/press_key 与 adapter.device 共用)──
+
+    def inject_gesture(self, backend, source, scrcpy_gesture, u2_gesture) -> str:
+        """双通道注入执行;设备队列线程内调用。
+
+        source:auto=取配置 injection_source;scrcpy=强制且故障如实报错;
+        u2=直接走 u2。与 screenshot_bytes 共用失败计数与降级窗口(同一
+        scrcpy 通道,一个健康状态):连续失败达阈值后 auto 在窗口内直接
+        走 u2,窗口到期再试以探测恢复。
+
+        手势安全由手势闭包保证(device_ops.gesture 实现):首写(DOWN)
+        前失败报 _CleanFallback → 整体回退 u2;DOWN 后失败闭包内已抬指
+        收尾,此处如实传播不重放(避免双注入)。
+        """
+        from .device_ops import _CleanFallback
+
+        resolved = source if source != "auto" else self._config.injection_source
+        if resolved == "u2":
+            u2_gesture()
+            return "u2"
+        if resolved == "auto" and self._scrcpy_degraded_until > time.monotonic():
+            u2_gesture()
+            return "u2"
+        try:
+            channel = self.get_or_start_channel()
+        except Exception:
+            self._note_channel_failure()
+            if resolved == "scrcpy":
+                raise
+            u2_gesture()
+            return "u2"
+        try:
+            scrcpy_gesture(channel)
+        except _CleanFallback as failure:
+            self._note_channel_failure()
+            if resolved == "scrcpy":
+                raise failure.original from None
+            u2_gesture()  # DOWN 未发出:整体回退
+            return "u2"
+        except Exception:
+            self._note_channel_failure()
+            raise  # DOWN 后失败:手势已抬指收尾,不重放
+        self._note_channel_success()
+        return "scrcpy"
+
+    def inject_tap(self, backend, x: int, y: int) -> None:
+        """坐标单击(图像点击事务的发送路径);通道按配置 injection_source。"""
+        from .device_ops import tap_gesture
+
+        self.inject_gesture(
+            backend,
+            "auto",
+            lambda ch: tap_gesture(ch, backend, x, y),
+            lambda: backend.tap(x, y),
+        )
+
+    def inject_swipe(
+        self, backend, sx: int, sy: int, ex: int, ey: int, duration: float
+    ) -> None:
+        """坐标滑动(契约 scroll 的手势);通道按配置 injection_source。"""
+        from .device_ops import swipe_gesture
+
+        self.inject_gesture(
+            backend,
+            "auto",
+            lambda ch: swipe_gesture(ch, backend, sx, sy, ex, ey, duration),
+            lambda: backend.swipe(sx, sy, ex, ey, duration),
+        )
+
+    def inject_press_key(self, backend, name: str) -> None:
+        """按键注入:back/home 双通道(按配置);其余键直接 u2
+        (scrcpy 通道仅映射这两个键)。"""
+        from .device_ops import press_gesture
+
+        if name not in ("back", "home"):
+            backend.press_key(name)
+            return
+        self.inject_gesture(
+            backend,
+            "auto",
+            lambda ch: press_gesture(ch, name),
+            lambda: backend.press_key(name),
+        )
+
+    def _note_channel_failure(self) -> None:
+        self._scrcpy_failures += 1
+        if self._scrcpy_failures >= _SCRCPY_FAIL_LIMIT:
+            self._scrcpy_degraded_until = (
+                time.monotonic() + _SCRCPY_DEGRADE_SECONDS
+            )
+
+    def _note_channel_success(self) -> None:
+        self._scrcpy_failures = 0
+        self._scrcpy_degraded_until = 0.0
 
     def close(self, timeout: float = _CLOSE_DRAIN_TIMEOUT_SECONDS) -> None:
         """有界排空后关闭;幂等。超时进入 FAULTED 并保留租约(plan 7.3)。

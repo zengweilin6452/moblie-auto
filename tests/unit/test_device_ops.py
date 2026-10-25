@@ -7,11 +7,11 @@ FakeChannel/FakeBackend 全部伪造,不触碰设备;auto 的"通道不可用即
 import pytest
 from fakes import FakeBackend, FakeChannel, make_session
 
-from mobile_auto import InvalidTarget, MobileAdapter
+from mobile_auto import ConfigurationError, InvalidTarget, MobileAdapter, MobileConfig
 from mobile_auto.errors import StreamUnavailable
 
 
-def make_adapter(channel=None, fail_start=False):
+def make_adapter(channel=None, fail_start=False, injection_source="auto"):
     backend = FakeBackend()
 
     def factory(serial):
@@ -19,7 +19,8 @@ def make_adapter(channel=None, fail_start=False):
             raise StreamUnavailable("通道启动失败")
         return channel
 
-    session, _ = make_session(backend=backend, channel_factory=factory)
+    config = MobileConfig(device_serial="SERIAL1", injection_source=injection_source)
+    session, _ = make_session(config=config, backend=backend, channel_factory=factory)
     session.start()
     session.release_lease()
     return MobileAdapter(session), backend
@@ -154,3 +155,72 @@ async def test_invalid_source_rejected(channel):
     adapter, _ = make_adapter(channel=channel)
     with pytest.raises(InvalidTarget, match="source"):
         await adapter.device.tap(1, 2, source="grpc")
+
+
+def test_invalid_injection_source_config_rejected():
+    with pytest.raises(ConfigurationError, match="injection_source"):
+        MobileConfig(device_serial="S", injection_source="grpc")
+
+
+# ── 契约路径透明替换(scroll/图像点击发送/press_key)──────────────
+
+
+async def test_contract_scroll_uses_scrcpy_channel(channel):
+    """契约 scroll 的手势注入透明走通道(scrcpy 优先),backend 不再被调用。"""
+    adapter, backend = make_adapter(channel=channel)
+    await adapter.scroll("down", 900)
+    kinds = {e[0] for e in channel.events}
+    assert {"down", "move", "up"} <= kinds
+    assert backend.swipes == []
+
+
+async def test_contract_scroll_first_write_failure_falls_back(channel):
+    channel.fail_on = {"down": StreamUnavailable("down 失败")}
+    adapter, backend = make_adapter(channel=channel)
+    await adapter.scroll("down", 900)
+    assert len(backend.swipes) == 1  # DOWN 未发出:整体回退 u2
+    assert channel.events == []
+
+
+async def test_config_injection_source_u2_pins_backend(channel):
+    """配置 injection_source="u2" 钉死契约路径:通道在场也不使用。"""
+    adapter, backend = make_adapter(channel=channel, injection_source="u2")
+    await adapter.scroll("down", 900)
+    assert len(backend.swipes) == 1 and channel.events == []
+
+
+async def test_session_inject_tap_prefers_channel(channel):
+    """图像点击事务的发送路径(session.inject_tap)走通道。"""
+    adapter, backend = make_adapter(channel=channel)
+    session = adapter._session
+    session.submit(lambda b: session.inject_tap(b, 10, 20)).result(5)
+    assert channel.events == [("down", 10, 20), ("up", 10, 20)]
+    assert backend.taps == []
+
+
+async def test_press_key_back_home_via_channel_other_keys_u2(channel):
+    """back/home 双通道;其余键(enter)直接 u2,通道不参与。"""
+    adapter, backend = make_adapter(channel=channel)
+    await adapter.press_key("home")
+    await adapter.press_key("enter")
+    assert ("press", "home", 0) in channel.events
+    assert backend.press_keys == ["enter"]
+
+
+# ── 降级窗口(注入与截图共用同一通道健康状态)────────────────────
+
+
+async def test_repeated_failures_open_degrade_window(channel):
+    channel.fail_on = {"down": StreamUnavailable("down 失败")}
+    adapter, backend = make_adapter(channel=channel)
+    for _ in range(3):  # 达到 _SCRCPY_FAIL_LIMIT:窗口开启
+        assert await adapter.device.tap(1, 2) == "u2"
+    assert backend.taps == [(1, 2)] * 3
+
+    channel.fail_on = {}  # 通道"恢复":窗口期内仍直接 u2,不触碰通道
+    assert await adapter.device.tap(3, 4) == "u2"
+    assert channel.events == []
+
+    adapter._session._scrcpy_degraded_until = 0.0  # 模拟窗口到期再探测
+    assert await adapter.device.tap(5, 6) == "scrcpy"
+    assert ("down", 5, 6) in channel.events

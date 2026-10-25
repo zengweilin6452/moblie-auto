@@ -40,10 +40,12 @@ _TOML_FIELDS = frozenset(
         "poll_interval",
         "port",
         "screenshot_source",
+        "injection_source",
     }
 )
 
 _SCREENSHOT_SOURCES = frozenset({"auto", "u2", "scrcpy"})
+_INJECTION_SOURCES = _SCREENSHOT_SOURCES
 _ENV_FIELDS = {
     "device_serial": ENV_DEVICE_SERIAL,
     "app_package": ENV_APP_PACKAGE,
@@ -73,6 +75,9 @@ class MobileConfig:
     port: int = 8765
     # 驱动截图通道:auto=scrcpy 优先、故障回退 u2;u2=强制 u2;scrcpy=强制且不回退
     screenshot_source: str = "auto"
+    # 注入通道(scroll/图像点击发送/press_key back/home 与 adapter.device):
+    # 同一语义;u2 可钉死时序敏感用例(手势插值 u2 在设备侧、scrcpy 在主机侧)
+    injection_source: str = "auto"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -107,6 +112,11 @@ class MobileConfig:
             raise _invalid(
                 "screenshot_source",
                 f"必须是 {' / '.join(sorted(_SCREENSHOT_SOURCES))} 之一",
+            )
+        if self.injection_source not in _INJECTION_SOURCES:
+            raise _invalid(
+                "injection_source",
+                f"必须是 {' / '.join(sorted(_INJECTION_SOURCES))} 之一",
             )
 
 
@@ -163,6 +173,7 @@ def load_config(
     poll_interval: Any = _UNSET,
     port: Any = _UNSET,
     screenshot_source: Any = _UNSET,
+    injection_source: Any = _UNSET,
 ) -> MobileConfig:
     """按 显式参数 > 环境变量 > TOML > 默认值 的优先级合并配置并校验。"""
     toml_data = _read_toml(config_path)
@@ -178,6 +189,7 @@ def load_config(
         "poll_interval": poll_interval,
         "port": port,
         "screenshot_source": screenshot_source,
+        "injection_source": injection_source,
     }
 
     merged: dict[str, Any] = {}

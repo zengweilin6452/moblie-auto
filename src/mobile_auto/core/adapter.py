@@ -180,7 +180,7 @@ class MobileAdapter:
                     "图像点击采集持续过期(重采集一次仍超时);请缩小搜索区域或提升阈值"
                 )
         self._session.send_checkpoint()  # 必测窗口:匹配完成后、点击发送前
-        backend.tap(*chosen.center)
+        self._session.inject_tap(backend, *chosen.center)
 
     async def _poll_until(self, attempt: Callable[[Any], T], target: Target) -> T:
         """在查找预算内轮询 attempt;歧义立即报,预算耗尽报 ElementNotFound。
@@ -259,18 +259,25 @@ class MobileAdapter:
         await self.press_key("back")
 
     async def press_key(self, name: str) -> None:
-        """发送有限键表内的按键;未知键报错,不开放任意 keycode。"""
+        """发送有限键表内的按键;未知键报错,不开放任意 keycode。
+
+        back/home 经双通道注入(按配置 injection_source,scrcpy 优先);
+        其余键直接走 u2。
+        """
         if name not in _PRESS_KEYS:
             raise InvalidTarget(
                 f"不支持的按键:{name!r};支持:{', '.join(sorted(_PRESS_KEYS))}"
             )
-        await self._call(lambda backend: backend.press_key(name))
+        await self._call(
+            lambda backend: self._session.inject_press_key(backend, name)
+        )
 
     async def scroll(self, direction: str, amount: int) -> None:
         """滚动:direction 为视口沿内容移动方向(down 对应手指向上)。
 
         amount 为正整数像素,夹限到屏幕安全区域;手势时长 0.3 秒,
         不承诺实际内容恰好移动同样像素。未知方向与非法距离报错。
+        手势经双通道注入(按配置 injection_source,scrcpy 优先)。
         """
         if direction not in _SCROLL_DIRECTIONS:
             raise InvalidTarget(
@@ -283,7 +290,9 @@ class MobileAdapter:
 
         def operation(backend):
             start, end = scroll_points(backend.screen_size(), direction, amount)
-            backend.swipe(start[0], start[1], end[0], end[1], gesture_seconds)
+            self._session.inject_swipe(
+                backend, start[0], start[1], end[0], end[1], gesture_seconds
+            )
 
         await self._call(operation)
 

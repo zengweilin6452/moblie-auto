@@ -63,6 +63,33 @@ async def test_device_tap_swipe_longpress(adapter, mobile_config):
 
 
 @pytest.mark.device
+async def test_contract_scroll_presskey_use_channel(adapter, mobile_config):
+    """契约 scroll/home 的注入透明走 scrcpy 通道(injection_source=auto 默认)。
+
+    行为判据与契约 scroll 用例同源(列表到底);通道使用证据:
+    scroll 后 session.healthy_channel() 非空(auto 首用即启动通道)。
+    """
+    await adapter.goto("")
+    assert await adapter.wait_for(Target(Locator.TEXT, "WLAN"))
+    await adapter.scroll("down", 1200)
+    assert await adapter.wait_for(Target(Locator.TEXT, "桌面")), "滑动未到列表底部"
+    assert (
+        adapter._session.healthy_channel() is not None
+    ), "auto 注入应已启动 scrcpy 通道"
+
+    await adapter.press_key("home")  # back/home 走同一通道
+    await asyncio.sleep(1.0)
+    await adapter.goto("")
+    assert await adapter.wait_for(Target(Locator.TEXT, "WLAN"))
+
+    t0 = time.monotonic()
+    for _ in range(2):
+        await adapter.scroll("down", 900)
+        await adapter.scroll("up", 900)
+    print(f"\n契约 4 连滑(透明 auto 注入)墙钟: {time.monotonic() - t0:.2f}s")
+
+
+@pytest.mark.device
 async def test_dense_sequence_scrcpy_vs_u2(adapter, mobile_config):
     """密集滑动 6 连发:同一序列分别经 u2 与 scrcpy 执行,打印墙钟。
 

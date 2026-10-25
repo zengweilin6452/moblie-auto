@@ -4,18 +4,20 @@
 契约 scroll/click 表达;按契约扩展决定(2026-10-24)以独立命名空间提供,
 绑定层不映射、契约测试不涉及。
 
-通道选择(source,按调用传参,不做全局配置):
-- "auto"(默认):scrcpy 控制流优先(原始 socket 写入,毫秒级/op),通道
-  不可用或首写(DOWN)失败时整个操作回退 u2(每 op 约 80ms RPC 往返,
-  P1 截图双通道实测的传输差同源);
+通道选择(source,按调用传参,默认 auto=取配置 injection_source):
+- "auto":scrcpy 控制流优先(原始 socket 写入,毫秒级/op),通道不可用
+  或首写(DOWN)失败时整个操作回退 u2(每 op 约 80-400ms RPC 往返);
 - "scrcpy":强制 scrcpy,不可用/故障如实报错,不静默换通道;
 - "u2":强制 u2(时序敏感、要求可复现的用例)。
 
-正确性不变量:手势是多写序列(DOWN…UP),DOWN 已发出后的任何失败都先
-尽力补发 UP(scrcpy 失败时经 u2 touch_up 收尾,两者同经 InputManager
-注入)再如实报错,不重放整个手势(避免双注入);整操作回退只发生在
-DOWN 尚未发出之前。u2 侧 long_press 用 u2 原生 long_click(真机验证
-有效),不用同点 swipe 拼(会被 App 识别为普通点击,深场景 S4 实证)。
+通道策略与降级窗口统一由 DeviceSession.inject_gesture 提供(与截图
+双通道共用失败计数:同一 scrcpy 通道,一个健康状态);本模块提供
+手势实现与安全不变量:手势是多写序列(DOWN…UP),DOWN 已发出后的
+任何失败都先尽力补发 UP(scrcpy 失败时经 u2 touch_up 收尾,两者同经
+InputManager 注入)再如实报错,不重放整个手势(避免双注入);整操作
+回退只发生在 DOWN 尚未发出之前。u2 侧 long_press 用 u2 原生 long_click
+(真机验证有效),不用同点 swipe 拼(会被 App 识别为普通点击,深场景
+S4 实证)。
 """
 
 from __future__ import annotations
@@ -57,8 +59,78 @@ def _validate_seconds(name: str, value) -> float:
     return float(value)
 
 
+def _recover_up(backend, x: int, y: int) -> None:
+    """scrcpy 中断后的抬指收尾:经 u2 裸注入 ACTION_UP,尽力而为。"""
+    try:
+        backend.touch_up(x, y)
+    except Exception:  # noqa: BLE001 - 收尾失败不掩盖原始错误
+        pass
+
+
+def tap_gesture(channel, backend, x: int, y: int) -> None:
+    """单击手势:DOWN → 短按 → UP;首写失败报 _CleanFallback。"""
+    try:
+        channel.touch_down(x, y)
+    except StreamUnavailable as exc:
+        raise _CleanFallback(exc) from exc
+    time.sleep(0.02)
+    try:
+        channel.touch_up(x, y)
+    except StreamUnavailable:
+        _recover_up(backend, x, y)
+        raise
+
+
+def swipe_gesture(
+    channel, backend, x0: int, y0: int, x1: int, y1: int, duration_s: float
+) -> None:
+    """直线滑动手势:DOWN → 等距 MOVE → UP;插值主机侧(5px 步)。"""
+    try:
+        channel.touch_down(x0, y0)
+    except StreamUnavailable as exc:
+        raise _CleanFallback(exc) from exc
+    steps = max(1, int(max(abs(x1 - x0), abs(y1 - y0)) / 5))
+    delay = max(duration_s / steps, 0.001)
+    last_x, last_y = x0, y0
+    try:
+        for i in range(1, steps + 1):
+            last_x = x0 + (x1 - x0) * i // steps
+            last_y = y0 + (y1 - y0) * i // steps
+            channel.touch_move(last_x, last_y)
+            time.sleep(delay)
+        channel.touch_up(x1, y1)
+    except StreamUnavailable:
+        _recover_up(backend, last_x, last_y)
+        raise
+
+
+def long_press_gesture(channel, backend, x: int, y: int, hold_s: float) -> None:
+    """长按手势:DOWN → hold → UP(框架级长按)。"""
+    try:
+        channel.touch_down(x, y)
+    except StreamUnavailable as exc:
+        raise _CleanFallback(exc) from exc
+    time.sleep(hold_s)
+    try:
+        channel.touch_up(x, y)
+    except StreamUnavailable:
+        _recover_up(backend, x, y)
+        raise
+
+
+def press_gesture(channel, name: str) -> None:
+    """按键手势(back/home):单写,失败即未发出,可整体回退。"""
+    try:
+        channel.press_key(name)
+    except StreamUnavailable as exc:
+        raise _CleanFallback(exc) from exc
+
+
 class DeviceOps:
-    """平台专属手势面;操作经会话队列执行,租约/串行/取消语义与契约方法一致。"""
+    """平台专属手势面;操作经会话队列执行,租约/串行/取消语义与契约方法一致。
+
+    通道策略与降级窗口经 session.inject_gesture(与契约路径注入共用)。
+    """
 
     def __init__(self, adapter) -> None:
         self._adapter = adapter
@@ -69,10 +141,12 @@ class DeviceOps:
         _validate_source(source)
 
         def op(backend):
-            if self._via_scrcpy(source, backend, lambda ch: self._tap(ch, backend, x, y)):
-                return "scrcpy"
-            backend.tap(x, y)
-            return "u2"
+            return self._adapter._session.inject_gesture(
+                backend,
+                source,
+                lambda ch: tap_gesture(ch, backend, x, y),
+                lambda: backend.tap(x, y),
+            )
 
         return await self._adapter._call(op)
 
@@ -93,13 +167,14 @@ class DeviceOps:
         _validate_source(source)
 
         def op(backend):
-            def gesture(ch):
-                self._swipe(ch, backend, x0, y0, x1, y1, duration_s)
-
-            if self._via_scrcpy(source, backend, gesture):
-                return "scrcpy"
-            backend.swipe(x0, y0, x1, y1, duration_s)
-            return "u2"
+            return self._adapter._session.inject_gesture(
+                backend,
+                source,
+                lambda ch: swipe_gesture(
+                    ch, backend, x0, y0, x1, y1, duration_s
+                ),
+                lambda: backend.swipe(x0, y0, x1, y1, duration_s),
+            )
 
         return await self._adapter._call(op)
 
@@ -116,90 +191,11 @@ class DeviceOps:
         _validate_source(source)
 
         def op(backend):
-            if self._via_scrcpy(source, backend, lambda ch: self._press(ch, backend, x, y, hold_s)):
-                return "scrcpy"
-            backend.long_click(x, y, duration=hold_s)
-            return "u2"
+            return self._adapter._session.inject_gesture(
+                backend,
+                source,
+                lambda ch: long_press_gesture(ch, backend, x, y, hold_s),
+                lambda: backend.long_click(x, y, duration=hold_s),
+            )
 
         return await self._adapter._call(op)
-
-    # ── 通道执行与手势安全 ───────────────────────────────────
-
-    def _via_scrcpy(self, source: str, backend, perform) -> bool:
-        """在 scrcpy 通道上执行 perform(channel);返回 False 表示走 u2。
-
-        DOWN 前失败:auto 整体回退 / scrcpy 原样抛原始错误;
-        DOWN 后失败:perform 内部已完成 UP 收尾,StreamUnavailable 原样传播。
-        """
-        channel = self._acquire_channel(source)
-        if channel is None:
-            return False
-        try:
-            perform(channel)
-            return True
-        except _CleanFallback as failure:
-            if source == "scrcpy":
-                raise failure.original from None
-            return False
-
-    def _acquire_channel(self, source: str):
-        if source == "u2":
-            return None
-        try:
-            return self._adapter._session.get_or_start_channel()
-        except Exception:
-            if source == "scrcpy":
-                raise
-            return None  # auto:通道不可用,回退 u2
-
-    def _tap(self, channel, backend, x: int, y: int) -> None:
-        try:
-            channel.touch_down(x, y)
-        except StreamUnavailable as exc:
-            raise _CleanFallback(exc) from exc
-        time.sleep(0.02)
-        try:
-            channel.touch_up(x, y)
-        except StreamUnavailable:
-            self._recover_up(backend, x, y)
-            raise
-
-    def _swipe(
-        self, channel, backend, x0, y0, x1, y1, duration_s: float
-    ) -> None:
-        try:
-            channel.touch_down(x0, y0)
-        except StreamUnavailable as exc:
-            raise _CleanFallback(exc) from exc
-        steps = max(1, int(max(abs(x1 - x0), abs(y1 - y0)) / 5))
-        delay = max(duration_s / steps, 0.001)
-        last_x, last_y = x0, y0
-        try:
-            for i in range(1, steps + 1):
-                last_x = x0 + (x1 - x0) * i // steps
-                last_y = y0 + (y1 - y0) * i // steps
-                channel.touch_move(last_x, last_y)
-                time.sleep(delay)
-            channel.touch_up(x1, y1)
-        except StreamUnavailable:
-            self._recover_up(backend, last_x, last_y)
-            raise
-
-    def _press(self, channel, backend, x: int, y: int, hold_s: float) -> None:
-        try:
-            channel.touch_down(x, y)
-        except StreamUnavailable as exc:
-            raise _CleanFallback(exc) from exc
-        time.sleep(hold_s)
-        try:
-            channel.touch_up(x, y)
-        except StreamUnavailable:
-            self._recover_up(backend, x, y)
-            raise
-
-    def _recover_up(self, backend, x: int, y: int) -> None:
-        """scrcpy 中断后的抬指收尾:经 u2 裸注入 ACTION_UP,尽力而为。"""
-        try:
-            backend.touch_up(x, y)
-        except Exception:  # noqa: BLE001 - 收尾失败不掩盖原始错误
-            pass
