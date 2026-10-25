@@ -283,8 +283,11 @@ class _ChannelManager(ServerSupervisor):
         elif state != SessionState.LEASED:
             raise DeviceUnavailable(f"会话状态 {state.value} 不允许启动视频流")
         try:
-            factory = self._channel_factory or (
-                lambda serial: ScrcpyChannel(serial)
+            from ..stream import channel_factory as make_channel_factory
+
+            factory = make_channel_factory(
+                self._session.config.stream_backend,
+                channel_factory_override=self._channel_factory,
             )
             channel = factory(self._session.serial)
             channel.start()

@@ -222,10 +222,13 @@ class DeviceSession:
         close 时随 shutdown 关停。"""
         supervisor = self._channel_supervisor
         if supervisor is None:
-            from ..stream.channel import ScrcpyChannel
+            from ..stream import channel_factory as make_channel_factory
             from ..stream.supervisor import ServerSupervisor
 
-            factory = self._channel_factory or ScrcpyChannel
+            factory = make_channel_factory(
+                self._config.stream_backend,
+                channel_factory_override=self._channel_factory,
+            )
             supervisor = ServerSupervisor(
                 starter=lambda: self._start_channel(factory)
             )

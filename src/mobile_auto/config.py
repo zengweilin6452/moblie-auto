@@ -42,11 +42,13 @@ _TOML_FIELDS = frozenset(
         "port",
         "screenshot_source",
         "injection_source",
+        "stream_backend",
     }
 )
 
 _SCREENSHOT_SOURCES = frozenset({"auto", "u2", "scrcpy"})
 _INJECTION_SOURCES = _SCREENSHOT_SOURCES
+_STREAM_BACKENDS = frozenset({"wetest", "upstream"})
 _ENV_FIELDS = {
     "device_serial": ENV_DEVICE_SERIAL,
     "app_package": ENV_APP_PACKAGE,
@@ -82,6 +84,10 @@ class MobileConfig:
     # 注入通道(scroll/图像点击发送/press_key back/home 与 adapter.device):
     # 同一语义;u2 可钉死时序敏感用例(手势插值 u2 在设备侧、scrcpy 在主机侧)
     injection_source: str = "auto"
+    # 视频流通道后端(P2 上游迁移):wetest=内嵌协议 fork(Android<17);
+    # upstream=上游官方 server v5.0.1(Android 17 兼容);默认 wetest 至
+    # SU-03 双真机验收后翻转
+    stream_backend: str = "wetest"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -119,6 +125,11 @@ class MobileConfig:
             raise _invalid(
                 "screenshot_source",
                 f"必须是 {' / '.join(sorted(_SCREENSHOT_SOURCES))} 之一",
+            )
+        if self.stream_backend not in _STREAM_BACKENDS:
+            raise _invalid(
+                "stream_backend",
+                f"必须是 {' / '.join(sorted(_STREAM_BACKENDS))} 之一",
             )
         if self.injection_source not in _INJECTION_SOURCES:
             raise _invalid(
@@ -198,6 +209,7 @@ def load_config(
     port: Any = _UNSET,
     screenshot_source: Any = _UNSET,
     injection_source: Any = _UNSET,
+    stream_backend: Any = _UNSET,
 ) -> MobileConfig:
     """按 显式参数 > 环境变量 > TOML > 默认值 的优先级合并配置并校验。"""
     toml_data = _read_toml(config_path)
@@ -215,6 +227,7 @@ def load_config(
         "port": port,
         "screenshot_source": screenshot_source,
         "injection_source": injection_source,
+        "stream_backend": stream_backend,
     }
 
     merged: dict[str, Any] = {}

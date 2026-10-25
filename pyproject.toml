@@ -20,6 +20,7 @@ image = [
 ]
 stream = [
     "wetest-scrcpy>=0.4.0,<0.5",
+    "av>=10",
 ]
 viewer = [
     "fastapi>=0.111",
