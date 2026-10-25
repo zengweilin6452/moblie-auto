@@ -43,3 +43,4 @@ tests/device/assets/
 
 # 运行产物(证据/运行状态;模板资产在 assets/)
 artifacts/
+examples/byd_academy/local.toml

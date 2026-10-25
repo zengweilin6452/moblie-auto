@@ -1,0 +1,12 @@
+# BYD Academy 移动端配置模板:复制为 local.toml(不入库)后按需修改。
+# 字段说明见 docs/integration.md;App 为 Beta_Academy V1.9.77(真机验证基线)。
+
+device_serial = "749622c9"
+app_package = "com.sinosoft.trainapp"
+app_activity = ".MainActivity"
+
+# 启动就绪锚点:desc=language(首页独有、语言无关;实测就绪约 1.3s)。
+# 落在登录页时该锚点不可见,由 flows.goto_home 的分类判据分流。
+[launch_ready_target]
+by = "accessibility_id"
+value = "language"
