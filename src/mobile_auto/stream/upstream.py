@@ -92,6 +92,7 @@ class UpstreamChannel:
         self._lock = threading.RLock()
         self._started = False
         self._server_proc = None  # adb shell app_process 流(持有防回收)
+        self._device_pid = None  # 设备端 server pid(stop 显式 kill 用)
         self._video_sock = None
         self._control_sock = None
         self._screen: tuple[int, int] | None = None
@@ -154,6 +155,7 @@ class UpstreamChannel:
                 "video=true",
                 "audio=false",
                 "control=true",
+                "send_device_meta=false",  # 首socket 64B 设备名块(默认true),关掉简化流
                 "video_codec=h264",
                 "tunnel_forward=true",
                 f"max_size={self._max_size}",
@@ -170,6 +172,7 @@ class UpstreamChannel:
             except BaseException:
                 self._teardown()
                 raise
+            self._device_pid = self._find_server_pid(adb_device)
             self._started = True
 
     def _connect(self, adb_device, timeout: float) -> None:
@@ -274,9 +277,16 @@ class UpstreamChannel:
                     packet = parse_video_packet(buffer[: 12 + size])
                     buffer = buffer[12 + size :]
                     if packet.pts_us is None:
-                        decoder = self._ensure_decoder(packet.payload)
+                        # CONFIG 包 = 解码器 extradata(SPS/PPS);直接 decode
+                        # 会报 InvalidDataError(单包非完整 NAL,真机实证)
+                        self._set_extradata(packet.payload)
                         continue
-                    for frame in decoder.decode(av.Packet(packet.payload)):
+                    try:
+                        decoded = decoder.decode(av.Packet(packet.payload))
+                    except av.error.InvalidDataError:
+                        # 单包解码失败(流启动期/坏包):丢包继续,不杀通道
+                        continue
+                    for frame in decoded:
                         ok, buf = cv2.imencode(
                             ".jpg",
                             frame.to_ndarray(format="bgr24"),
@@ -292,20 +302,34 @@ class UpstreamChannel:
         except Exception as exc:  # 泵线程错误:通道降级信号
             self._decode_error = str(exc)
 
-    def _ensure_decoder(self, extradata: bytes | None = None):
+    def _ensure_decoder(self):
         import av
 
         if self._decoder is None:
             self._decoder = av.CodecContext.create("h264", "r")
-        if extradata:
-            # PyAV 无直接 extradata 注入口:把 CONFIG 包当普通包喂入
-            self._decoder.decode(av.Packet(extradata))
         return self._decoder
+
+    def _set_extradata(self, payload: bytes) -> None:
+        """CONFIG 包(SPS/PPS)设为解码器 extradata;须在首帧前到达。
+        分辨率变化重建解码器以接收新 extradata。"""
+        import av
+
+        if self._latest_jpeg is not None:  # 流重启:重建解码器
+            self._decoder = av.CodecContext.create("h264", "r")
+        self._ensure_decoder().extradata = payload
 
     def _adb_device(self):
         import adbutils
 
         return adbutils.adb.device(serial=self._serial)
+
+    def _find_server_pid(self, adb_device) -> int | None:
+        """按 scid 定位设备端 server pid(stop 显式回收用;尽力而为)。"""
+        try:
+            out = adb_device.shell(f"pgrep -f 'scid={self._scid:08x}'")
+            return int(out.strip().splitlines()[0]) if out.strip() else None
+        except Exception:
+            return None
 
     @staticmethod
     def _sock_alive_control(sock) -> bool:  # 占位:见 healthy()
@@ -428,9 +452,17 @@ class UpstreamChannel:
                     pass
         self._video_sock = None
         self._control_sock = None
+        # 上游 server 不因 stdin EOF 退出(wetest 会):显式 kill 进程,
+        # 再关 shell 流兜底;kill 失败仍按幂等关闭,残留由自愈路径兜底
+        if self._device_pid:
+            try:
+                self._adb_device().shell(f"kill {self._device_pid}")
+            except Exception:
+                pass
+            self._device_pid = None
         if self._server_proc is not None:
             try:
-                self._server_proc.close()  # 关 stdin 使 app_process 退出
+                self._server_proc.close()
             except Exception:
                 pass
             self._server_proc = None

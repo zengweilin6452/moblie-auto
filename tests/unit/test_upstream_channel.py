@@ -200,19 +200,23 @@ def test_video_header_and_session_meta_set_screen(fake_adb):
 
 
 def test_wrong_video_header_kills_channel(fake_adb):
-    channel, adb = make_started_channel(fake_adb)
-    try:
-        feed_video(channel, adb, b"\x00\x00\x00\x01" + session_meta(1, 1))
-        assert wait_for(lambda: channel._decode_error is not None)
-        assert not channel.healthy()
-    finally:
-        channel.stop()
+    """首包 codec 头非 h264 → 泵报错、通道降级(直接喂坏头,不经 helper)。"""
+    import threading
 
+    channel = UpstreamChannel("SERIAL", scid=proto.encode_scid(12345, 9))
+    t = threading.Thread(target=channel.start, kwargs={"timeout": 3.0})
+    t.start()
+    deadline = time.monotonic() + 2
+    while not fake_adb.server_sockets() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    bad = bytes([0, 0, 0, 1])
+    feed_video(channel, fake_adb, bad + session_meta(1, 1))
+    t.join(timeout=5)
+    assert channel._decode_error is not None
+    assert not channel.healthy()
+    channel.stop()
 
-# ── 解码与取帧 ────────────────────────────────────────────
-
-
-def _h264_keyframe_stream(fake_adb, channel):
+def _h264_keyframe_stream(channel, fake_adb):
     """喂 x264 编码的 64x64 帧序列(SPS/PPS 内联首关键帧;2x2 解不出帧,实测)。"""
     from fractions import Fraction
 
@@ -244,7 +248,7 @@ def test_latest_frame_after_decode(fake_adb):
     channel, adb = make_started_channel(fake_adb, meta=None)
     try:
         feed_video(channel, adb, session_meta(64, 64))
-        _h264_keyframe_stream(fake_adb, channel)
+        _h264_keyframe_stream(channel, fake_adb)
         channel._start_thread.join(timeout=5)
         assert wait_for(lambda: channel._latest_jpeg is not None), (
             f"未出帧;decode_error={channel._decode_error}"
@@ -262,7 +266,7 @@ def test_capture_png_from_decoded_frame(fake_adb):
     channel, adb = make_started_channel(fake_adb, meta=None)
     try:
         feed_video(channel, adb, session_meta(64, 64))
-        _h264_keyframe_stream(fake_adb, channel)
+        _h264_keyframe_stream(channel, fake_adb)
         channel._start_thread.join(timeout=5)
         assert wait_for(lambda: channel._latest_jpeg is not None)
         png = channel.capture_png()
