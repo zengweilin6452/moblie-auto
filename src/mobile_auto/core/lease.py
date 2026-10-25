@@ -1,16 +1,25 @@
-"""跨进程设备租约:Windows 文件区域锁(plan 7.2)。
+"""跨进程设备租约:Windows 文件区域锁(plan 7.2;P2 工单 04 增持有者信息)。
 
 锁文件保留在用户本机统一目录下,以设备序列号摘要命名(不泄露序列号);
 锁是 OS 句柄的生命周期:释放仅解锁句柄、不删除文件,进程退出由操作系统
 释放,不靠删除锁文件或 PID 过期时间偷锁,不提供强制抢占。
 保证范围为同一 Windows 登录用户。
+
+持有者信息(P2 工单 04):获取锁成功后把 pid/hostname/worker/时间/用途
+写入伴生文件 <digest>.holder.json——实测 Windows 区域锁持锁期间任何句柄
+对锁文件的读写都被拒,持有者信息无法与锁共存于同一文件。伴生文件只由
+持锁者写入(单写者无锁);释放不擦除,读方以 probe_held 判定当前占用,
+伴生内容仅在占用时呈现(空闲时视为残留)。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import socket
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..errors import DeviceBusy, DeviceUnavailable
@@ -19,13 +28,23 @@ DEFAULT_LEASE_DIR = Path.home() / ".mobile-auto" / "leases"
 
 
 class DeviceLease:
-    """某一时刻允许向设备发送操作的跨进程独占权(GLOSSARY“设备租约”)。"""
+    """某一时刻允许向设备发送操作的跨进程独占权(GLOSSARY"设备租约")。"""
 
-    def __init__(self, serial: str, lease_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        serial: str,
+        lease_dir: Path | None = None,
+        *,
+        worker: str = "",
+        purpose: str = "",
+    ) -> None:
         self._serial = serial
+        self._worker = worker
+        self._purpose = purpose
         self._dir = Path(lease_dir) if lease_dir else DEFAULT_LEASE_DIR
         digest = hashlib.sha256(serial.encode("utf-8")).hexdigest()[:24]
         self._path = self._dir / f"{digest}.lock"
+        self._holder_path = self._dir / f"{digest}.holder.json"
         self._handle = None  # OS 句柄;非空即持有租约
         self._mutex = threading.Lock()  # 进程内并发保护
 
@@ -34,11 +53,18 @@ class DeviceLease:
         return self._path
 
     @property
+    def holder_path(self) -> Path:
+        return self._holder_path
+
+    @property
     def held(self) -> bool:
         return self._handle is not None
 
     def acquire(self) -> None:
-        """非阻塞获取;被其他进程持有时立即报 DeviceBusy,不排队。"""
+        """非阻塞获取;被其他进程持有时立即报 DeviceBusy,不排队。
+
+        获取成功后写入持有者信息(信息性;失败不影响持有权)。
+        """
         with self._mutex:
             if self._handle is not None:
                 return
@@ -57,6 +83,28 @@ class DeviceLease:
                     f"设备 {self._serial} 正被其他进程占用,不排队抢占"
                 ) from exc
             self._handle = handle
+            self._write_holder()
+
+    def _write_holder(self) -> None:
+        """覆写伴生持有者 JSON;仅持锁者调用(单写者),尽力而为。"""
+        try:
+            self._holder_path.write_text(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "hostname": socket.gethostname(),
+                        "worker": self._worker,
+                        "purpose": self._purpose,
+                        "acquired_at": datetime.now(UTC).isoformat(
+                            timespec="milliseconds"
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
     def release(self) -> None:
         """释放租约;幂等。释放不回滚已发送的操作(GLOSSARY)。"""
@@ -74,9 +122,53 @@ class DeviceLease:
                 self._handle.close()
                 self._handle = None
 
+    def probe_held(self) -> bool:
+        """当前是否被任意进程(含本实例)持有;仅用于状态展示。
+
+        本实例未持时以"尝试锁定字节 0"探测:成功即视为空闲并立即解锁。
+        本进程其他会话持有时探测同样报持有(区域锁跨句柄互斥),对展示
+        语义而言正确——该时刻租约确被占用。
+        """
+        with self._mutex:
+            if self._handle is not None:
+                return True
+            if os.name != "nt" or not self._path.exists():
+                return False
+            import msvcrt
+
+            handle = open(self._path, "a+b")
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                return True  # 锁不上:被某进程持有
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            finally:
+                handle.close()
+            return False
+
     def __enter__(self) -> DeviceLease:
         self.acquire()
         return self
 
     def __exit__(self, *exc_info) -> None:
         self.release()
+
+
+def read_holder(serial: str, lease_dir: Path | None = None) -> dict | None:
+    """读取某设备租约的伴生持有者信息;缺失/损坏返回 None。
+
+    返回值仅在配合 probe_held()==True 时代表"当前持有者";空闲时是上一次
+    获取的残留。
+    """
+    lease = DeviceLease(serial, lease_dir)
+    try:
+        return json.loads(lease._holder_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+__all__ = ["DeviceLease", "read_holder"]
