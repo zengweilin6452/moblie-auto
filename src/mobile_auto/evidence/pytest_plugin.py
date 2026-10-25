@@ -23,6 +23,7 @@ import pytest
 
 _SECTION_TITLE = "mobile-auto-evidence"
 _POOL_STATE: dict = {}  # 池化运行态(sessionstart 建立,finish 清空)
+_DEBUG_VIEWER = None  # DebugViewerHandle(sessionstart 建立,finish 关停)
 
 
 def pytest_addoption(parser):
@@ -39,6 +40,12 @@ def pytest_addoption(parser):
         default=None,
         metavar="SERIALS",
         help="设备池候选(逗号分隔,覆盖配置 device_pool;启用池化 mobile_session)",
+    )
+    group.addoption(
+        "--debug-viewer",
+        action="store_true",
+        default=False,
+        help="pytest 运行期间拉起本机 viewer 调试服务(仅 controller 进程;默认关闭)",
     )
 
 
@@ -129,17 +136,33 @@ def mobile_adapter(mobile_session):
 
 
 def pytest_sessionstart(session):
-    global _POOL_STATE
+    global _POOL_STATE, _DEBUG_VIEWER
     if not _resolve_pool(session.config):
         _POOL_STATE = {}
-        return
-    _POOL_STATE = {
-        "worker": os.environ.get("PYTEST_XDIST_WORKER", ""),
-        "config": session.config,
-        "base": _pool_base_config(session.config),
-        "serial": None,
-    }
-    _write_state(phase="started")
+    else:
+        _POOL_STATE = {
+            "worker": os.environ.get("PYTEST_XDIST_WORKER", ""),
+            "config": session.config,
+            "base": _pool_base_config(session.config),
+            "serial": None,
+        }
+        _write_state(phase="started")
+    if session.config.getoption("--debug-viewer") and not os.environ.get(
+        "PYTEST_XDIST_WORKER"
+    ):
+        # 仅 controller/主进程启动:xdist worker 不再各起一份抢端口(P2 工单 03)
+        from ..errors import ConfigurationError
+        from ..viewer.server import start_debug_viewer
+
+        try:
+            _DEBUG_VIEWER = start_debug_viewer(_pool_base_config(session.config))
+        except ConfigurationError as exc:
+            raise pytest.UsageError(f"--debug-viewer 启动失败:{exc}") from exc
+        print(
+            f"\nmobile-auto viewer 运行中:{_DEBUG_VIEWER.url}"
+            "(实时预览读不占设备租约;会话结束后自动关闭)",
+            flush=True,
+        )
 
 
 def pytest_runtest_logstart(nodeid, location):
@@ -148,9 +171,13 @@ def pytest_runtest_logstart(nodeid, location):
 
 
 def pytest_sessionfinish(session, exitstatus):
+    global _DEBUG_VIEWER
     if _POOL_STATE:
         _write_state(phase="finished")
         _POOL_STATE.clear()
+    if _DEBUG_VIEWER is not None:
+        _DEBUG_VIEWER.stop()
+        _DEBUG_VIEWER = None
 
 
 def _write_state(*, phase: str, current_test: str | None = None) -> None:
