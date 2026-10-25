@@ -90,3 +90,6 @@ h2 small { color: #8b94a3; font-weight: 400; font-size: 12px; }
 #control-note { color: #7bd88f; font-size: 12px; }
 #stage.control-mode #preview { cursor: pointer; }
 #stage.control-mode #overlay { display: none; }
+
+/* 设备档案行(P2 工单 06):弱化的辅助信息 */
+.muted { color: var(--text-dim, #888); font-size: 0.85em; }

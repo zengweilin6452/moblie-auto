@@ -46,8 +46,51 @@ function populateDevices(devices) {
     const mark = { device: "", connected: "·已连", unauthorized: "·未授权", offline: "·离线" }[d.state] ?? "";
     opt.textContent = `${d.serial}${mark}`;
     select.appendChild(opt);
+    if (d.state === "device") {
+      // 已授权在线设备:拉取档案,型号补进选项文本(进程内缓存一次)
+      fetchDeviceInfo(d.serial).then((info) => {
+        if (info && info.model && opt.isConnected) {
+          opt.textContent = `${d.serial}·${info.model}${mark}`;
+        }
+      });
+    }
   }
   select.value = devices.some((d) => d.serial === current) || !current ? current : "";
+  renderDeviceInfo(defaultDev ? defaultDev.serial : current);
+}
+
+/* ── 设备档案(P2 工单 06):getprop 只读探测,前端缓存不轮询 ── */
+
+const deviceInfoCache = new Map();
+
+async function fetchDeviceInfo(serial) {
+  if (!serial) return null;
+  if (deviceInfoCache.has(serial)) return deviceInfoCache.get(serial) ?? null;
+  try {
+    const res = await fetch(`/api/v1/devices/${encodeURIComponent(serial)}/info`);
+    if (!res.ok) throw new Error(String(res.status));
+    deviceInfoCache.set(serial, await res.json());
+  } catch {
+    deviceInfoCache.set(serial, null);
+  }
+  renderDeviceInfo(state.device || serial);
+  return deviceInfoCache.get(serial) ?? null;
+}
+
+function renderDeviceInfo(serial) {
+  const el = $("device-info");
+  if (!el) return;
+  const info = serial ? deviceInfoCache.get(serial) : null;
+  if (!info || (!info.brand && !info.model && !info.android_version && !info.resolution)) {
+    el.textContent = "";
+    return;
+  }
+  const parts = [
+    [info.brand, info.model].filter(Boolean).join(" "),
+    info.android_version && `Android ${info.android_version}`,
+    info.resolution,
+  ];
+  el.textContent = parts.filter(Boolean).join(" · ");
 }
 
 async function switchDevice(serial) {

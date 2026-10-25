@@ -96,6 +96,44 @@ def error_envelope(request: Request, status: int, code: str, message: str) -> JS
     )
 
 
+def _empty_device_info() -> dict:
+    """空档案:各字段未知(未授权/离线/探测失败)。"""
+    return {"brand": None, "model": None, "android_version": None, "resolution": None}
+
+
+def _probe_device_info(serial: str) -> dict:
+    """adb 只读探测设备档案(getprop + wm size);失败各字段为 None。
+
+    读取无设备副作用:不建会话、不触碰会话状态机(P2 工单 06)。
+    """
+    import adbutils
+
+    def prop(device, name: str) -> str | None:
+        try:
+            return device.shell(f"getprop {name}").strip() or None
+        except Exception:
+            return None
+
+    try:
+        device = adbutils.adb.device(serial=serial)
+        resolution = None
+        try:
+            for part in device.shell("wm size").replace("\n", " ").split():
+                if "x" in part and part[0].isdigit():
+                    resolution = part  # Physical size 行,Override 忽略
+                    break
+        except Exception:
+            pass
+        return {
+            "brand": prop(device, "ro.product.brand"),
+            "model": prop(device, "ro.product.model"),
+            "android_version": prop(device, "ro.build.version.release"),
+            "resolution": resolution,
+        }
+    except Exception:
+        return _empty_device_info()
+
+
 class _ChannelManager(ServerSupervisor):
     """viewer 进程内的 scrcpy 通道监督器:启动经租约短事务,预览客户端即用户。
 
@@ -356,6 +394,8 @@ def create_app(
     store = store or SnapshotStore()
     app = FastAPI(title="mobile-auto viewer", lifespan=None)
     app.state.ws_clients = 0
+    app.state.device_info_cache = {}  # 设备档案缓存(P2 工单 06):探测一次,进程内不轮询
+    app.state.device_info_lock = threading.Lock()
     app.state.store = store
     app.state.registry = registry or _DeviceRegistry.single(
         session, manager=channel_manager
@@ -399,6 +439,31 @@ def create_app(
             "devices": app.state.registry.devices(),
             "request_id": request.state.request_id,
         }
+
+    @app.get("/api/v1/devices/{serial}/info")
+    async def device_info(serial: str, request: Request):
+        """设备档案(P2 工单 06):品牌/型号/系统版本/分辨率。
+
+        只读探测(getprop + wm size),结果进程内缓存不轮询;仅已授权在线
+        设备探测,未授权/离线返回空档案不触碰 adb;探测失败各字段为
+        null,不阻塞设备列表。
+        """
+        registry: _DeviceRegistry = app.state.registry
+        states = {d["serial"]: d["state"] for d in registry.devices()}
+        if serial not in states:
+            return error_envelope(request, 404, "not-found", f"设备 {serial} 不在已知列表")
+        cache: dict = app.state.device_info_cache
+        with app.state.device_info_lock:
+            cached = cache.get(serial)
+        if cached is not None:
+            return {"serial": serial, **cached}
+        if states[serial] != "device":
+            empty = _empty_device_info()
+        else:
+            empty = await asyncio.to_thread(_probe_device_info, serial)
+        with app.state.device_info_lock:
+            cache[serial] = empty
+        return {"serial": serial, **empty}
 
     @app.get("/api/v1/status")
     async def status(request: Request, device: str | None = None):
