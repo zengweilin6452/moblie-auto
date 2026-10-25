@@ -336,7 +336,7 @@ def test_tap_sends_down_then_up_bytes(fake_adb):
         assert struct.unpack(">ii", down[10:18]) == (540, 1200)
         assert struct.unpack(">HH", down[18:22]) == (1080, 2400)
         assert struct.unpack(">H", down[22:24])[0] == 0xFFFF
-        assert up[0] == 2 and up[1] == 2  # ACTION_UP
+        assert up[0] == 2 and up[1] == 1  # ACTION_UP(Android 真值)
         assert down[2:] == up[2:]
     finally:
         channel.stop()
@@ -374,8 +374,9 @@ def test_swipe_sends_down_moves_up(fake_adb):
         channel.swipe(100, 1200, 300, 1200, duration_s=0.05)
         sent = adb.connections[1].sent
         msgs = [sent[i : i + 32] for i in range(0, len(sent), 32)]
-        assert msgs[0][1] == 0 and msgs[-1][1] == 2  # DOWN … UP
+        assert msgs[0][1] == 0 and msgs[-1][1] == 1  # DOWN … UP(真值)
         assert all(m[0] == 2 for m in msgs)
+        assert all(m[1] == 2 for m in msgs[1:-1])  # 中间包是 MOVE
         assert len(msgs) >= 4  # DOWN + ≥2 MOVE + UP
         last_x = struct.unpack(">i", msgs[-1][10:14])[0]
         assert last_x == 300

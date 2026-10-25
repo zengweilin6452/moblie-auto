@@ -65,14 +65,18 @@ class TestTouch:
         assert data == expect
         assert len(data) == 1 + 1 + 8 + 4 + 4 + 2 + 2 + 2 + 4 + 4
 
-    def test_move_action_value_is_1_up_is_2(self):
+    def test_action_values_match_android_motionevent(self):
+        """Android MotionEvent:DOWN=0/UP=1/MOVE=2;写反则 tap 永不抬指(真机实证)。"""
+        assert proto.ACTION_DOWN == 0
+        assert proto.ACTION_UP == 1
+        assert proto.ACTION_MOVE == 2
         move = proto.encode_touch(proto.ACTION_MOVE, 1, 1, 10, 10)
         up = proto.encode_touch(proto.ACTION_UP, 1, 1, 10, 10)
-        assert move[1] == 1 and up[1] == 2
+        assert move[1] == 2 and up[1] == 1
 
     def test_tap_sequence_is_down_then_up(self):
         down, up = proto.tap_sequence(3, 4, 100, 200)
-        assert down[1] == 0 and up[1] == 2
+        assert down[1] == 0 and up[1] == 1
         assert down[2:] == up[2:]  # 同点同屏
 
 

@@ -20,10 +20,11 @@ TYPE_INJECT_KEYCODE = 0
 TYPE_INJECT_TOUCH_EVENT = 2
 TYPE_BACK_OR_SCREEN_ON = 4
 
-# MotionEvent.ACTION_*(注入 touch 用;Controller.java 侧同义)
+# android.view.MotionEvent 常量(server Controller 直接与此比较,发错序
+# 手势失效:曾把 UP/MOVE 写反,真机表现为 tap 永不抬指、无点击效果)
 ACTION_DOWN = 0
-ACTION_MOVE = 1
-ACTION_UP = 2
+ACTION_UP = 1
+ACTION_MOVE = 2
 
 # KeyEvent(Action=0 DOWN / 1 UP)
 KEY_ACTION_DOWN = 0
