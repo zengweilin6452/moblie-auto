@@ -93,3 +93,14 @@ h2 small { color: #8b94a3; font-weight: 400; font-size: 12px; }
 
 /* 设备档案行(P2 工单 06):弱化的辅助信息 */
 .muted { color: var(--text-dim, #888); font-size: 0.85em; }
+
+/* 顶层视图切换与证据面板(P2 工单 08) */
+#view-tabs { padding: 0.3rem 1rem 0; }
+#evidence-pane { display: none; }
+body.evidence-mode #evidence-pane { display: block; }
+body.evidence-mode #preview-pane,
+body.evidence-mode #inspect-pane,
+body.evidence-mode #tree-pane { display: none; }
+.evidence-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+#evidence-list li { cursor: pointer; padding: 0.25rem 0.4rem; border-bottom: 1px solid #ddd; }
+#evidence-frame { max-width: 100%; border: 1px solid #ccc; }

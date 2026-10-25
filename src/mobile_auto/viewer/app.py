@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+import re
 import threading
 import time
 import uuid
@@ -132,6 +133,83 @@ def _probe_device_info(serial: str) -> dict:
         }
     except Exception:
         return _empty_device_info()
+
+
+# ── 失败证据只读浏览(P2 工单 08)─────────────────────────
+
+_EVIDENCE_ID = re.compile(r"[0-9a-f]{16}")
+_EVIDENCE_LIST_LIMIT = 200
+_EVIDENCE_MEDIA = {
+    ".png": "image/png",
+    ".xml": "text/xml; charset=utf-8",
+    ".json": "application/json",
+}
+
+
+def _list_evidence(config) -> list[dict]:
+    """artifacts 下任意层级(xdist worker 子目录)的证据清单,新在前。"""
+    import json
+
+    try:
+        meta_paths = list(
+            Path(config.artifacts_dir).glob("**/evidence/*/meta.json")
+        )
+    except OSError:
+        return []
+    items = []
+    for meta_path in meta_paths[:_EVIDENCE_LIST_LIMIT]:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        items.append(
+            {
+                "evidence_id": meta.get("evidence_id"),
+                "created_at": meta.get("created_at"),
+                "device": (meta.get("device") or {}).get("serial"),
+                "failure": (meta.get("failure") or {}).get("type"),
+                "frame_source": (meta.get("frame_source") or {}).get("source"),
+                "artifacts": [
+                    a.get("name") for a in meta.get("artifacts", []) if isinstance(a, dict)
+                ],
+            }
+        )
+    items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return items
+
+
+def _read_evidence_meta(config, evidence_id: str) -> dict | None:
+    import json
+
+    if not _EVIDENCE_ID.fullmatch(evidence_id):
+        return None
+    for path in Path(config.artifacts_dir).glob(
+        f"**/evidence/{evidence_id}/meta.json"
+    ):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _read_evidence_file(config, evidence_id: str, name: str):
+    """读取证据目录内登记过的文件;文件名必须命中 meta 白名单,天然防穿越。"""
+    meta = _read_evidence_meta(config, evidence_id)
+    if meta is None:
+        return None
+    allowed = {a.get("name") for a in meta.get("artifacts", []) if isinstance(a, dict)}
+    if name not in allowed:
+        return None
+    for path in Path(config.artifacts_dir).glob(
+        f"**/evidence/{evidence_id}/{name}"
+    ):
+        try:
+            payload = path.read_bytes()
+        except OSError:
+            return None
+        return payload, _EVIDENCE_MEDIA.get(path.suffix.lower(), "application/octet-stream")
+    return None
 
 
 class _ChannelManager(ServerSupervisor):
@@ -256,6 +334,10 @@ class _DeviceRegistry:
         states = self._adb_states()
         authorized = sorted(s for s, v in states.items() if v == "device")
         return authorized[0] if len(authorized) == 1 else None
+
+    @property
+    def config(self):
+        return self._config
 
     def _adb_states(self) -> dict[str, str]:
         try:
@@ -486,6 +568,37 @@ def create_app(
                 "snapshots": len(store.snapshot_ids()),
             },
         }
+
+    # ── 失败证据浏览(P2 工单 08;只读,限 artifacts 内)─────
+
+    @app.get("/api/v1/evidence")
+    async def evidence_list(request: Request):
+        """证据清单:artifacts 下任意层级(xdist worker 子目录)的 evidence 条目。"""
+        items = await asyncio.to_thread(_list_evidence, app.state.registry.config)
+        return {"evidence": items, "request_id": request.state.request_id}
+
+    @app.get("/api/v1/evidence/{evidence_id}")
+    async def evidence_detail(evidence_id: str, request: Request):
+        meta = await asyncio.to_thread(
+            _read_evidence_meta, app.state.registry.config, evidence_id
+        )
+        if meta is None:
+            return error_envelope(request, 404, "not-found", "证据不存在")
+        return meta
+
+    @app.get("/api/v1/evidence/{evidence_id}/files/{name}")
+    async def evidence_file(evidence_id: str, name: str, request: Request):
+        served = await asyncio.to_thread(
+            _read_evidence_file, app.state.registry.config, evidence_id, name
+        )
+        if served is None:
+            return error_envelope(request, 404, "not-found", "证据文件不存在")
+        payload, media_type = served
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={"cache-control": "no-store"},
+        )
 
     # ── 快照 ──────────────────────────────────────────────────
 

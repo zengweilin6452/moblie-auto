@@ -22,6 +22,10 @@
     <button id="btn-wake" type="button" disabled>亮屏</button>
     <span id="control-note"></span>
   </header>
+  <nav id="view-tabs" class="tabs">
+    <button class="tab active" data-view="debug" type="button">调试</button>
+    <button class="tab" data-view="evidence" type="button">证据</button>
+  </nav>
   <main>
     <section id="preview-pane">
       <div id="screen-head">
@@ -82,9 +86,22 @@
       <p id="tree-meta">「采集检查」后显示;点击树节点联动选中。</p>
       <ul id="tree"></ul>
     </section>
+    <section id="evidence-pane">
+      <h2>失败证据 <small id="evidence-count"></small></h2>
+      <p id="evidence-hint">用例失败时经 --mobile-evidence 自动采集;此处只读浏览,不提供删除或修改。</p>
+      <div class="evidence-layout">
+        <ul id="evidence-list"></ul>
+        <div id="evidence-detail" class="hidden">
+          <img id="evidence-frame" alt="证据画面" class="hidden" />
+          <table id="evidence-attr"><tbody></tbody></table>
+          <ul id="evidence-files"></ul>
+        </div>
+      </div>
+    </section>
   </main>
   <script src="/coords.js"></script>
   <script src="/snapshot_freeze.js"></script>
+  <script src="/evidence.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
