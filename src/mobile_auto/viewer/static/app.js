@@ -72,6 +72,8 @@ function setView(view) {
     clearOverlay();
     state.snapshotId = null;
     clearInspectInfo();
+    freezeControl.release(); // 冻结引用不释放会把实时快照配额挤满
+    setFreezeNotice("");
   }
 }
 
@@ -96,14 +98,36 @@ function clearInspectInfo() {
 }
 
 /* 检查编辑期把快照固定为冻结引用:未冻结的实时快照 120 秒后被驱逐,
-   编辑中途拾取/保存会 404。尽力调用;失败时后续操作按过期重采集。 */
-function freezeSnapshot(id) {
-  if (!id) return;
+   编辑中途拾取/保存会 404。冻结快照不参与容量驱逐,只增不放会把实时
+   配额挤满、新快照一创建就被驱逐,因此至多保持一份冻结引用:新的冻结
+   前先释放旧的(状态机见 snapshot_freeze.js),回实时/切设备时释放。
+   冻结失败不中断编辑,但底图会按实时有效期过期,必须提示。 */
+const freezeControl = SnapshotFreeze.createSnapshotFreeze((id, frozen) =>
   fetch(`/api/v1/snapshots/${id}/freeze`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ frozen: true }),
-  }).catch(() => {});
+    body: JSON.stringify({ frozen }),
+    keepalive: true, // 页面卸载时的释放也能发出
+  }).then((res) => {
+    if (!res.ok) throw new Error(`freeze ${res.status}`);
+  }),
+);
+
+function setFreezeNotice(text) {
+  const el = $("freeze-notice");
+  el.textContent = text;
+  el.classList.toggle("hidden", !text);
+}
+
+async function freezeSnapshot(id) {
+  try {
+    await freezeControl.freeze(id);
+    setFreezeNotice("");
+  } catch {
+    setFreezeNotice(
+      "冻结失败:编辑底图未被固定,约 120 秒后过期;若拾取/保存报快照过期,请重新「采集检查」。",
+    );
+  }
 }
 
 async function inspectCapture() {
@@ -753,6 +777,7 @@ $("btn-copy").addEventListener("click", async () => {
 });
 $("preview").addEventListener("click", pickAt);
 setupTabs();
+window.addEventListener("pagehide", () => freezeControl.release()); // 卸载前释放冻结引用
 refreshStatus();
 setInterval(refreshStatus, 3000);
 connectPreview();

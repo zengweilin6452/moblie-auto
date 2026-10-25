@@ -246,3 +246,74 @@ async def test_handle_resolves_by_recorded_index_and_stales_when_shrunk():
     backend.elements[("text", "WLAN")] = [rows[0]]  # 页面变化:匹配列表缩短
     with pytest.raises(StaleHandle):
         await handles[1].get_text()
+
+
+async def test_handle_stale_when_same_kind_node_inserted_before():
+    """列表前方插入同类节点:新节点继承原序号与关键属性,句柄不得指向它。
+
+    重现审查场景:仅凭"序号+关键属性"会点错——插入节点恰好占据原
+    位置;匹配数变化使结构无法确认,报 StaleHandle 而非点错。
+    """
+    rows = [
+        FakeElement(
+            (0, 0, 100, 50), text="第一行", info={"className": "android.widget.TextView"}
+        ),
+        FakeElement(
+            (0, 60, 100, 110), text="第二行", info={"className": "android.widget.TextView"}
+        ),
+    ]
+    backend = FakeBackend(elements={("text", "WLAN"): rows})
+    adapter, _ = make_adapter(backend=backend, config=SMALL_BUDGET)
+    handles = await adapter.find_elements(Target(Locator.TEXT, "WLAN"))
+    handle = handles[0]  # 自动补充 index=0 的句柄:审查场景中的旧句柄
+
+    inserted = FakeElement(
+        (0, 0, 100, 50), text="新插入", info={"className": "android.widget.TextView"}
+    )
+    backend.elements[("text", "WLAN")] = [inserted] + rows  # 前方插入同类节点
+    with pytest.raises(StaleHandle, match="匹配数已变化"):
+        await handle.click()
+    assert rows[0].click_calls == 0  # 原元素未被点击
+    assert inserted.click_calls == 0  # 新插入元素也未被点击
+
+
+async def test_handle_stale_when_match_list_permuted_same_count():
+    """同数量换位(头部删除+尾部补位):序号与关键属性都对上,但位置
+    不同——位置一致性拒绝,不点击补位节点。"""
+    first = FakeElement(
+        (0, 0, 100, 50), text="第一行", info={"className": "android.widget.TextView"}
+    )
+    second = FakeElement(
+        (0, 60, 100, 110), text="第二行", info={"className": "android.widget.TextView"}
+    )
+    backend = FakeBackend(elements={("text", "WLAN"): [first, second]})
+    adapter, _ = make_adapter(backend=backend, config=SMALL_BUDGET)
+    handles = await adapter.find_elements(Target(Locator.TEXT, "WLAN"))
+
+    replacement = FakeElement(
+        (0, 120, 100, 170), text="补位行", info={"className": "android.widget.TextView"}
+    )
+    backend.elements[("text", "WLAN")] = [second, replacement]  # 数量不变,内容换位
+    with pytest.raises(StaleHandle, match="位置已变化"):
+        await handles[1].click()
+    assert second.click_calls == 0
+    assert replacement.click_calls == 0
+
+
+async def test_handle_reuse_clicks_when_static_same_kind_rows():
+    """静态页面、同类多行:结构(匹配数)与位置都未变化,句柄正常点击。"""
+    rows = [
+        FakeElement(
+            (0, 0, 100, 50), text="第一行", info={"className": "android.widget.TextView"}
+        ),
+        FakeElement(
+            (0, 60, 100, 110), text="第二行", info={"className": "android.widget.TextView"}
+        ),
+    ]
+    backend = FakeBackend(elements={("text", "WLAN"): rows})
+    adapter, _ = make_adapter(backend=backend, config=SMALL_BUDGET)
+    handles = await adapter.find_elements(Target(Locator.TEXT, "WLAN"))
+    await handles[0].click()
+    await handles[1].click()
+    assert rows[0].click_calls == 1
+    assert rows[1].click_calls == 1

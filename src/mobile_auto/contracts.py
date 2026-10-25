@@ -77,8 +77,10 @@ class ElementHandle:
 
     携带重校验依据;过期即失效,不自动指向新节点。原生句柄重用前重新
     定位并校验关键属性(className、resourceId、contentDescription;文本
-    易变不参与身份);图像句柄校验模板摘要、屏幕尺寸方向与位置一致性
-    (plan 6.2)。会话改变或依据不一致报 StaleHandle。
+    易变不参与身份)、匹配数与位置一致性——同类节点插入会挤占序号,
+    仅凭"关键属性相同的第 N 个"无法确认同一节点;图像句柄校验模板
+    摘要、屏幕尺寸方向与位置一致性(plan 6.2)。会话改变或依据不一致
+    报 StaleHandle。
     owner 为绑定会话,仅用于路由操作,不参与相等比较与展示。
     """
 
@@ -88,6 +90,7 @@ class ElementHandle:
     class_name: str = ""
     resource_id: str = ""
     content_desc: str = ""
+    match_count: int | None = None
     image_sha256: str = ""
     screen_size: tuple[int, int] | None = None
     orientation: str = ""

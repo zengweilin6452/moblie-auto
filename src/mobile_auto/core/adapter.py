@@ -31,6 +31,7 @@ from .selectors import (
     NATIVE_LOCATORS,
     attribute_value,
     ensure_editable,
+    image_match_kwargs,
     make_handle,
     make_image_handle,
     resolve_single,
@@ -145,21 +146,13 @@ class MobileAdapter:
         清单切换即失效。匹配无结果是空列表——这是查询结果,不是错误;
         非法模板与设备错误分别以 InvalidTemplate / DeviceUnavailable 报告。
         """
-        from ..imaging.engine import match_prepared, validate_capture_center
+        from ..imaging.engine import match_prepared
 
         template, prepared = self._templates.get(self._store(), target.value)
-        source = (template.meta.get("source_width"), template.meta.get("source_height"))
         results = match_prepared(
             self._session.screenshot_bytes(backend),
             prepared,
-            confidence=target.confidence,
-            region=target.region,
-            source_resolution=(
-                source if all(isinstance(v, int) for v in source) else None
-            ),
-            capture_center=validate_capture_center(
-                template.meta.get("capture_center")
-            ),
+            **image_match_kwargs(template.meta, target),
         )
         return template.meta, results
 
@@ -352,7 +345,12 @@ class MobileAdapter:
                 ]
             matches = self._locate(backend, target)
             return [
-                make_handle(element, per_result(offset), owner=self._session)
+                make_handle(
+                    element,
+                    per_result(offset),
+                    owner=self._session,
+                    match_count=len(matches),
+                )
                 for offset, element in enumerate(select_matches(matches, target))
             ]
 

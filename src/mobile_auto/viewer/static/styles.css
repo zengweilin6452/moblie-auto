@@ -45,6 +45,7 @@ h2 small { color: #8b94a3; font-weight: 400; font-size: 12px; }
 }
 #preview-message { color: #8b94a3; font-size: 12px; min-height: 1em; margin: 6px 0 0; }
 #stream-notice { color: #f0b429; font-size: 12px; min-height: 1em; margin: 6px 0 0; }
+#freeze-notice { color: #f0b429; font-size: 12px; min-height: 1em; margin: 6px 0 0; }
 
 /* 检查栏:元素属性表 */
 #attr-table, #region-table { width: 100%; border-collapse: collapse; font-size: 12px; }

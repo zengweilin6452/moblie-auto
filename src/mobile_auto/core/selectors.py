@@ -145,8 +145,14 @@ def identity_of(info: dict) -> tuple[str, str, str]:
     )
 
 
-def make_handle(element, target: Target, owner=None) -> ElementHandle:
-    """把一次匹配固化为查询句柄;重校验依据取自该次快照。"""
+def make_handle(
+    element, target: Target, owner=None, match_count: int | None = None
+) -> ElementHandle:
+    """把一次匹配固化为查询句柄;重校验依据取自该次快照。
+
+    match_count 为创建时该定位的可见匹配总数:重校验时数量不一致说明
+    匹配列表结构已变化,序号不可再信任。
+    """
     info = getattr(element, "info", {}) or {}
     identity = identity_of(info)
     bounds = element.bounds
@@ -159,14 +165,18 @@ def make_handle(element, target: Target, owner=None) -> ElementHandle:
         class_name=identity[0],
         resource_id=identity[1],
         content_desc=identity[2],
+        match_count=match_count,
         owner=owner,
     )
 
 
 def revalidate_handle(backend, handle: ElementHandle):
-    """句柄重用:重新定位并校验关键属性;身份无法确认报 StaleHandle。
+    """句柄重用:重新定位并校验关键属性、匹配数与位置;无法确认报 StaleHandle。
 
-    不重定向到新节点:目标消失、歧义或属性变化都不视为找到同一节点。
+    不重定向到新节点:目标消失、歧义、属性变化、匹配列表增减或位置
+    移动都不视为找到同一节点——同类节点在列表前方插入时,新节点会
+    恰好继承原序号与原属性,仅凭"序号+关键属性"会点错,故结构或
+    位置对不上即过期。
     """
     target = handle.target
     validate_locatable(target, NATIVE_LOCATORS)
@@ -182,10 +192,40 @@ def revalidate_handle(backend, handle: ElementHandle):
         ) from exc
     if identity_of(getattr(node, "info", {}) or {}) != handle.identity:
         raise StaleHandle("句柄关键属性已变化,拒绝指向新节点;请重新查找")
+    if handle.match_count is not None and len(matches) != handle.match_count:
+        raise StaleHandle(
+            f"可见匹配数已变化({handle.match_count} → {len(matches)}),"
+            "序号无法确认同一节点;请重新查找"
+        )
+    if tuple(node.bounds) != tuple(handle.bounds):
+        raise StaleHandle(
+            f"句柄目标位置已变化(原 {handle.bounds},现 {node.bounds}),"
+            "不能确认同一节点;请重新查找"
+        )
     return node
 
 
 IMAGE_HANDLE_IOU_MIN = 0.5  # 图像句柄位置一致性下限(plan 6.2;校准初值)
+
+
+def image_match_kwargs(template_meta: dict, target: Target) -> dict:
+    """模板 meta + Target → 引擎匹配参数;图像查询与句柄重校验共用。
+
+    两条路径必须用同一套 confidence/region/source_resolution/
+    capture_center:查询走采集位置先验、重校验走全图时,远处同图
+    实例会让刚查到的句柄重校验即报 StaleHandle。
+    """
+    from ..imaging.engine import validate_capture_center
+
+    source = (template_meta.get("source_width"), template_meta.get("source_height"))
+    return {
+        "confidence": target.confidence,
+        "region": target.region,
+        "source_resolution": (
+            source if all(isinstance(v, int) for v in source) else None
+        ),
+        "capture_center": validate_capture_center(template_meta.get("capture_center")),
+    }
 
 
 def make_image_handle(target: Target, result, template_meta: dict, screen, owner=None):
@@ -219,7 +259,9 @@ class ImageNode:
 def revalidate_image_handle(backend, handle: ElementHandle, store) -> ImageNode:
     """图像句柄重用:校验模板摘要、会话、尺寸方向与位置一致性(plan 6.2)。
 
-    任一身份依据无法确认报 StaleHandle,不重定向到新位置。
+    重新匹配经 image_match_kwargs 与查询路径共用参数(含采集位置先验
+    与跨分辨率尺度),任一身份依据无法确认报 StaleHandle,不重定向到
+    新位置。
     """
     target = handle.target
     template = store.load(target.value)
@@ -231,13 +273,13 @@ def revalidate_image_handle(backend, handle: ElementHandle, store) -> ImageNode:
     orientation = "portrait" if screen[1] >= screen[0] else "landscape"
     if orientation != handle.orientation:
         raise StaleHandle(f"屏幕方向变化:{orientation}")
-    from ..imaging.engine import match_template
+    from ..imaging.engine import match_prepared, prepare_template
 
-    results = match_template(
+    prepared = prepare_template(template.png, what=f"模板 {target.value}")
+    results = match_prepared(
         backend.screenshot_png(),
-        template.png,
-        confidence=target.confidence,
-        region=target.region,
+        prepared,
+        **image_match_kwargs(template.meta, target),
     )
     matches = select_matches(results, target)
     if not matches:

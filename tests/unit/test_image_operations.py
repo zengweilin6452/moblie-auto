@@ -22,6 +22,7 @@ from mobile_auto import (
     Target,
     UnsupportedOperation,
 )
+from mobile_auto.imaging.engine import capture_center_from_region
 from mobile_auto.imaging.store import TemplateStore
 
 SCREEN_W, SCREEN_H, SIZE = 150, 200, 20
@@ -233,6 +234,77 @@ async def test_handle_stale_after_screen_size_change(env):
     backend.screen = (SCREEN_W * 2, SCREEN_H)
     with pytest.raises(StaleHandle, match="尺寸变化"):
         await handle.click()
+
+
+# ── 采集位置先验模板的句柄重校验(重现审查 P4b 回归)──────────────
+# 大屏才能让 150px 先验边距区别于全图;远角实例须落在预测区域外。
+
+WIDE_W, WIDE_H = 600, 800
+PRIOR_AT = (400, 300)  # 预测中心实例左上角
+FAR_AT = (40, 40)  # 远角同图实例(全图序号更靠前)
+
+
+class WideScriptedBackend(ScriptedBackend):
+    """大屏脚本后端:screen_size 与脚本截图一致,供先验几何与句柄校验。"""
+
+    def screen_size(self):
+        return (WIDE_W, WIDE_H)
+
+
+def wide_screen(*coords, seed=1):
+    screen = np.random.default_rng(seed).integers(
+        0, 255, size=(WIDE_H, WIDE_W, 3), dtype=np.uint8
+    )
+    for x, y in coords:
+        screen[y : y + SIZE, x : x + SIZE] = PATTERN
+    return screen
+
+
+@pytest.fixture
+def prior_env(tmp_path):
+    assets = tmp_path / "assets"
+    store = TemplateStore(assets)
+    region = (PRIOR_AT[0], PRIOR_AT[1], SIZE, SIZE)
+    center = capture_center_from_region(region, (WIDE_W, WIDE_H))
+    store.create(
+        "demo/prior.png",
+        png_bytes(PATTERN),
+        source_width=WIDE_W,
+        source_height=WIDE_H,
+        app_package="com.demo",
+        capture_center=center,
+    )
+    config = MobileConfig(device_serial="SERIAL1", assets_dir=assets)
+    return config, Target(Locator.IMAGE, "demo/prior.png")
+
+
+async def test_image_handle_reuse_shares_query_match_params(prior_env):
+    """查询走采集位置先验,句柄重校验必须共用同一套匹配参数。
+
+    重现审查场景:近处实例 + 远处同图实例、画面完全未变——重校验若
+    全图匹配会选中 (y,x) 更靠前的远角实例,刚查到的句柄点击即报
+    StaleHandle;共用先验参数后命中同一实例,正常点击。
+    """
+    config, image_target = prior_env
+    two = wide_screen(PRIOR_AT, FAR_AT)
+    adapter, backend = make(config, WideScriptedBackend([two, two, two]))
+    (handle,) = await adapter.find_elements(image_target)  # 先验生效:只返回近处实例
+    assert (handle.bounds[0], handle.bounds[1]) == PRIOR_AT
+    await handle.click()  # 画面未变:重校验命中同一实例,不误报过期
+    assert backend.taps == [(PRIOR_AT[0] + SIZE // 2, PRIOR_AT[1] + SIZE // 2)]
+
+
+async def test_image_handle_stale_when_prior_instance_gone(prior_env):
+    """近处实例消失、只剩预测区域外的同图实例:回退全图命中后位置
+    一致性拒绝,不重定向到远处实例。"""
+    config, image_target = prior_env
+    both = wide_screen(PRIOR_AT, FAR_AT)
+    gone = wide_screen(FAR_AT, seed=3)
+    adapter, backend = make(config, WideScriptedBackend([both, gone, gone]))
+    (handle,) = await adapter.find_elements(image_target)
+    with pytest.raises(StaleHandle, match="位置偏移"):
+        await handle.click()
+    assert backend.taps == []
 
 
 async def test_cancel_window_covers_image_transaction(env):
