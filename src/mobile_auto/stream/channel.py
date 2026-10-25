@@ -284,6 +284,22 @@ class ScrcpyChannel:
         payload = _TOUCH_MSG.pack(int(action), -1, x, y, width, height, 0xFFFF, 1)
         self._send(ctrl, ControlType.INJECT_TOUCH_EVENT, payload)
 
+    def touch_down(self, x: int, y: int) -> None:
+        """手势分解入口(adapter.device 扩展面):DOWN/MOVE/UP 三件套。"""
+        from wetest.scrcpy import Action
+
+        self.touch(x, y, Action.DOWN)
+
+    def touch_move(self, x: int, y: int) -> None:
+        from wetest.scrcpy import Action
+
+        self.touch(x, y, Action.MOVE)
+
+    def touch_up(self, x: int, y: int) -> None:
+        from wetest.scrcpy import Action
+
+        self.touch(x, y, Action.UP)
+
     def tap(self, x: int, y: int) -> None:
         """单击:DOWN → 短暂按住 → UP;坐标为设备像素。"""
         import time as _time

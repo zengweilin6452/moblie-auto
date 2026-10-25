@@ -149,6 +149,10 @@ class DeviceBackend(Protocol):
         self, sx: int, sy: int, ex: int, ey: int, duration: float
     ) -> None: ...
 
+    def long_click(self, x: int, y: int, duration: float = 0.8) -> None: ...
+
+    def touch_up(self, x: int, y: int) -> None: ...
+
     def dump_ui(self) -> str: ...
 
 
@@ -210,6 +214,16 @@ class U2Backend:
 
     def swipe(self, sx: int, sy: int, ex: int, ey: int, duration: float) -> None:
         self._device.swipe(sx, sy, ex, ey, duration=duration)
+
+    def long_click(self, x: int, y: int, duration: float = 0.8) -> None:
+        # u2 jsonrpc.click 带时长 = 框架级长按(2026-10-25 真机验证:
+        # MIUI 桌面长按触发编辑模式);不要用同点 swipe 拼长按——会被
+        # App 识别为普通点击(深场景 S4 实证)
+        self._device.long_click(x, y, duration=duration)
+
+    def touch_up(self, x: int, y: int) -> None:
+        """裸注入 ACTION_UP:scrcpy 手势中途断连时的抬指收尾通道。"""
+        self._device.touch.up(x, y)
 
     def tap(self, x: int, y: int) -> None:
         self._device.click(x, y)

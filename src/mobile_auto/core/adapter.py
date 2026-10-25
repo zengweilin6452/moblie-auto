@@ -97,6 +97,20 @@ class MobileAdapter:
     def __init__(self, session: DeviceSession) -> None:
         self._session = session
         self._templates = _TemplateCache()
+        self._device_ops = None
+
+    @property
+    def device(self):
+        """平台扩展面(契约外命名空间):坐标手势原语 tap/swipe/long_press。
+
+        15 方法契约不映射此处,契约测试不涉及(2026-10-24 契约扩展决定);
+        语义与通道选择见 core/device_ops.py 模块注释。
+        """
+        if self._device_ops is None:
+            from .device_ops import DeviceOps
+
+            self._device_ops = DeviceOps(self)
+        return self._device_ops
 
     async def _call(self, operation: Callable[[Any], T]) -> T:
         """提交到会话队列并等待;对未开始任务的取消传播由 wrap_future 提供。

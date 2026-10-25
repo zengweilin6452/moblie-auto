@@ -64,6 +64,8 @@ class FakeBackend:
         self.press_keys = []
         self.swipes = []
         self.taps = []
+        self.long_clicks = []
+        self.touch_ups = []
         self.find_calls = 0
         self.screenshot_calls = 0
         self.closed = False
@@ -123,6 +125,12 @@ class FakeBackend:
     def swipe(self, sx, sy, ex, ey, duration):
         self.swipes.append((sx, sy, ex, ey, duration))
 
+    def long_click(self, x, y, duration=0.8):
+        self.long_clicks.append((x, y, duration))
+
+    def touch_up(self, x, y):
+        self.touch_ups.append((x, y))
+
     def tap(self, x, y):
         self.taps.append((x, y))
 
@@ -150,6 +158,7 @@ def make_session(
     backend: FakeBackend | None = None,
     states: dict[str, str] | None = None,
     lease_factory=None,
+    channel_factory=None,
 ):
     """构建注入伪造的会话;默认唯一已授权设备 SERIAL1 与空租约。"""
     config = config or MobileConfig(device_serial="SERIAL1")
@@ -162,7 +171,7 @@ def make_session(
         device_enumerator=lambda: {"SERIAL1": "device"} if states is None else states,
         lease_factory=lease_factory,
         # 单测密闭:视频通道始终启动失败(auto 策略即时回退 u2,不触碰 adb)
-        channel_factory=no_channel_factory,
+        channel_factory=channel_factory or no_channel_factory,
     )
     return session, backend
 
@@ -171,6 +180,43 @@ def no_channel_factory(serial):
     from mobile_auto.errors import StreamUnavailable
 
     raise StreamUnavailable("单测禁用视频通道")
+
+
+class FakeChannel:
+    """手势注入所需形状的伪造通道;按事件名脚本化失败。
+
+    fail_on: {"down"|"move"|"up": Exception};事件触发时抛出,
+    否则记录 (事件名, x, y)。
+    """
+
+    def __init__(self, fail_on: dict | None = None):
+        self.events: list[tuple[str, int, int]] = []
+        self.fail_on = fail_on or {}
+        self.started = False
+
+    def start(self, timeout: float = 0) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.started = False
+
+    def healthy(self) -> bool:
+        return self.started
+
+    def _record(self, name: str, x: int, y: int) -> None:
+        exc = self.fail_on.get(name)
+        if exc is not None:
+            raise exc
+        self.events.append((name, x, y))
+
+    def touch_down(self, x: int, y: int) -> None:
+        self._record("down", x, y)
+
+    def touch_move(self, x: int, y: int) -> None:
+        self._record("move", x, y)
+
+    def touch_up(self, x: int, y: int) -> None:
+        self._record("up", x, y)
 
 
 def make_adapter(
