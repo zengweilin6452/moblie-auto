@@ -100,6 +100,9 @@ def collect_failure_evidence(
             "screen_size": list(screen) if screen else None,
             # 弹窗守卫统计:失败前是否清理过、命中什么;与"是否静默重试"无关
             "dialog_guard": session.dialog_guard_stats,
+            # 坐标基准(工单 04):注入时通道/后端两组尺寸与刷新结果;
+            # 本会话尚未发生通道注入时为 null
+            "coordinate_spaces": _coordinate_spaces(session),
         },
         "frame_source": frame_source,
         "artifacts": artifacts,
@@ -175,6 +178,18 @@ def _capture_post_failure(session: DeviceSession, timeout: float, failure_at: fl
 
     capture_lag_ms = round((time.monotonic() - failure_at) * 1000, 1)
     return frame, tree, screen, reason, {"source": source, "capture_lag_ms": capture_lag_ms}
+
+
+def _coordinate_spaces(session: DeviceSession) -> dict | None:
+    """会话最近一次注入前的基准快照;无通道注入记录时为 None。"""
+    basis = getattr(session, "last_coordinate_basis", None)
+    if not isinstance(basis, dict):
+        return None
+    copied = dict(basis)
+    for key in ("channel", "backend"):
+        value = copied.get(key)
+        copied[key] = list(value) if value else None
+    return copied
 
 
 def _jpeg_to_png(jpeg: bytes) -> bytes | None:

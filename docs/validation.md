@@ -339,6 +339,43 @@ spec:.scratch/scrcpy-upstream/(协议对照 v5.0.1 源码逐项核实);提交 63
 - 默认 stream_backend 已翻转为 upstream;wetest 保留为回退(显式 stream_backend="wetest")。
 - 遗留(2026-10-25 更新):capture_png 分辨率语义已随 PRD §8.5 修订(upstream=流分辨率,全分辨率取证走 u2);wetest 通道删除工单仍待内网设备矩阵验证。
 
+## 坐标基准保鲜(工单 04,2026-10-26)
+
+注入坐标必须与设备当前显示基准一致;此前 `Channel.refresh_screen_size` 在 `src/`
+内零业务调用者,旋转/折叠后 viewer 与 `channel.touch` 的 clamp 都按旧尺寸点错位置。
+
+- **调用时机**:`DeviceSession.inject_gesture` 在拿到通道后、首写(DOWN)之前调用
+  `ensure_coordinate_basis(backend, channel)`;viewer `/api/v1/input/touch`、
+  `/input/swipe` 在 `_inject` 的设备队列任务内先保鲜再取 `channel.screen_size()`
+  换算归一化坐标。阻塞的 `wm size`/刷新不得在事件循环线程执行。
+- **校验内容**:通道缓存尺寸 vs 后端实时 `wm size`(`U2Backend.window_size`);
+  不一致且通道可刷新 → `refresh_screen_size()` → 重读 → 注入。
+- **节流**:同一会话、同一通道对象 1 秒内最多校验一次(含一次 `wm size` 往返);
+  通道对象变化(监督器重建)立即重校验。正常未旋转流程因此不增加 shell 往返。
+- **通道能力**:`ScrcpyChannel.can_refresh_screen_size = True`(重探 `wm size` +
+  rotation);`UpstreamChannel.can_refresh_screen_size = False`。
+- **upstream 限制(不得静默假绿)**:上游通道 `refresh_screen_size` 是接口同形的
+  空实现,`screen_size` 来自视频会话元包,可能被 `max_size` 缩放,旋转时由泵线程
+  在下一元包自动更新。因此对不可刷新通道只比较宽高比:比例一致视为同一显示区的
+  视频缩放(`consistent=true`);比例不一致如实记 `refreshed=false,
+  refreshable=false, consistent=false`,不调用空实现、不改道、不重放注入。
+  若真机出现 upstream 旋转后基准迟迟不更新,再评估 `dumpsys display` / 显示区偏移
+  (spec 前提崩塌 4),当前不做。
+- **source 语义**:`auto` 实际走 u2(含降级窗口)与显式 `source="u2"` 不经通道,
+  没有通道基准,不校验;显式 `source="scrcpy"` 校验但**不改道**。
+- **观测**:journal 注入行 `coordinate_basis = {channel, backend, refreshed,
+  refreshable, consistent, checked_at[, refresh_error]}`;失败证据
+  `meta.device.coordinate_spaces` 为同一快照(无通道注入记录时为 `null`)。
+- **已知口径**:`ScrcpyChannel._resolve_screen` 只取 `wm size` 第一个 `WxH`,不处理
+  `Override size:` 行,与工单 02 的 density 口径(先 Override)不同;`wm size 1080x2400`
+  测试残留会造成一次合法不一致,校验只刷新一次,不循环。
+- **真机验证(待补,本轮无设备)**:`adb -s 749622c9 shell settings put system
+  accelerometer_rotation 0` → `adb -s 749622c9 shell settings put system user_rotation 1`
+  → viewer 连续 10 次点击目标元素应全部命中,journal 出现 `refreshed:true` 行;
+  测完按原方向恢复:`adb -s 749622c9 shell settings put system user_rotation 0`
+  (原为横屏则按原值),再 `adb -s 749622c9 shell settings put system
+  accelerometer_rotation 1` 恢复自动旋转。
+
 ## wait_gone / click_until_gone 原语与 index 语义(2026-10-26,工单 05)
 
 - **目标**:把"等某个东西消失/点到它消失"从用例手写轮询变成原语;用例里

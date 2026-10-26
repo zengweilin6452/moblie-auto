@@ -111,6 +111,12 @@ pytest tests/contract -q          # 本地参考契约核对
 | OperationOutcomeUnknown | 已发送后取消 | 结果未知类(不得重试) |
 | SessionFaulted | 会话故障/关闭后 | 会话故障类 |
 
+**坐标基准(契约外观测,2026-10-26)**:失败证据 `meta.device.coordinate_spaces`
+记录最近一次通道注入前的通道/后端两组尺寸与刷新结果
+(`{channel, backend, refreshed, refreshable, consistent, checked_at}`),未发生通道
+注入时为 `null`;不属于错误类型,绑定层无需映射,原样透传即可。注入前基准校验与
+刷新由本包内部完成(节流 1s,见 `docs/validation.md`),契约方法签名不变。
+
 ## 5. 契约版本记录
 
 | 日期 | 契约内容 | 依据 |
@@ -118,6 +124,7 @@ pytest tests/contract -q          # 本地参考契约核对
 | 2026-10-24 | 15 方法 + platform;13 类错误;六种 Locator;语义以 plan 5.2/5.3 为准 | 工单 01–11 交付 |
 | 2026-10-25 | `goto` 新增可选 `package`/`activity` 显式覆盖(缺省沿用配置,行为向后兼容);`activity` 必须与 `package` 同时给出 | 同一会话切换被启动 App 的需要 |
 | 2026-10-25 | 新增可选配置 `dialog_guard`(契约外行为,默认关闭):预算耗尽时按白名单清理一次系统弹窗,命中才重试一次 | MIUI 权限弹窗随机挡住锚点等待(见 §10) |
+| 2026-10-26 | 坐标基准生命周期(契约外):注入前校验缓存尺寸 vs 实时 `wm size` 并刷新(1s 节流);证据新增 `meta.device.coordinate_spaces` | 旋转/折叠后按旧基准点击(工单 04) |
 | 2026-10-26 | 契约外新增 `wait_gone`/`click_until_gone`(15 方法签名与语义不变;绑定层按需转发,见 §12) | 工单 05:消失等待原语 |
 
 内网接入完成后追加:真实 Port 枚举值 ↔ 本地 Locator 映射表、行为差异
