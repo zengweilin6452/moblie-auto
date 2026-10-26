@@ -56,7 +56,7 @@ _INJECTION_OPS = frozenset(
         "device.long_press",
     }
 )
-_NOT_FOUND_OPS = frozenset({"wait_for", "wait_gone"})
+_NOT_FOUND_OPS = frozenset({"wait_for", "wait_gone", "click_until_gone"})
 
 
 def _utc_now() -> str:

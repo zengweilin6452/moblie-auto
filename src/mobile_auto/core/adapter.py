@@ -67,6 +67,19 @@ def _explicit_str(value: Any, field_name: str) -> str | None:
     return value
 
 
+def _budget(timeout: float | None, default: float) -> float:
+    """timeout 校验(与 wait_for 同一口径):有限、非负、非 bool。"""
+    budget = default if timeout is None else timeout
+    if (
+        isinstance(budget, bool)
+        or not isinstance(budget, (int, float))
+        or not math.isfinite(budget)
+        or budget < 0
+    ):
+        raise ValueError(f"timeout 必须是有限的非负数值,得到 {timeout!r}")
+    return float(budget)
+
+
 class _TemplateCache:
     """资产解析缓存(P2):键 (资产根, 逻辑名),清单 version_id 变化即失效。
 
@@ -520,6 +533,84 @@ class MobileAdapter:
                     )
                 return False
             await asyncio.sleep(min(self._session.config.poll_interval, remaining))
+
+    @journaled("wait_gone")
+    async def wait_gone(self, target: Target, timeout: float | None = None) -> bool:
+        """默认 wait_timeout 秒、按 poll_interval 轮询;首次不可见即返回 True。
+
+        预算耗尽返回 False;timeout=0 只查询一次;负数或非有限值报
+        ValueError(调用方编程错误)。设备错误原样传播,不折算为 False
+        (与 wait_for 对称)。不触发弹窗守卫:守卫服务于"目标出现被弹窗
+        遮挡"的场景,目标不可见本身已是所需结果。
+        """
+        budget = _budget(timeout, self._session.config.wait_timeout)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + budget
+        while True:
+            if not await self.is_visible(target):
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(self._session.config.poll_interval, remaining))
+
+    @journaled("click_until_gone")
+    async def click_until_gone(
+        self, target: Target, timeout: float | None = None, interval: float = 0.5
+    ) -> bool:
+        """反复点击目标直到消失;消失或本轮已找不到返回 True,预算耗尽 False。
+
+        仅用于"点击后自身消失"的控件(弹窗关闭、提示确认);点击会跳转
+        页面时目标不再出现,将连点到预算耗尽。原生目标每轮一个队列任务:
+        查找→唯一定位→取消检查点→点击;多匹配无序号抛 AmbiguousTarget,
+        不猜;查找竞态导致的 ElementNotFound 视为已消失。IMAGE 目标每轮
+        一次完整点击事务,不做"先查询再事务"的双重采集。轮间 sleep
+        min(interval, 剩余预算);interval 必须为有限正数,否则 ValueError。
+        设备错误原样传播。
+
+        轮次上限取预算内理论最大轮数(floor(timeout/interval)+1,至少 1):
+        Windows 事件循环的休眠可能提前唤醒,仅靠墙钟会在预算边缘多打一轮。
+        """
+        budget = _budget(timeout, self._session.config.wait_timeout)
+        if (
+            isinstance(interval, bool)
+            or not isinstance(interval, (int, float))
+            or not math.isfinite(interval)
+            or interval <= 0
+        ):
+            raise ValueError(f"interval 必须是有限的正数值,得到 {interval!r}")
+
+        def attempt(backend):
+            if target.by.value == "image":
+                try:
+                    self._image_click_transaction(backend, target)
+                except ElementNotFound:  # 采集期内竞态消失即达成目的
+                    return "gone"
+                return "clicked"
+            matches = self._locate(backend, target)
+            if not matches:
+                return "gone"
+            try:
+                element = resolve_single(matches, target)
+            except ElementNotFound:  # 序号越界与零匹配同语义:本轮已消失
+                return "gone"
+            self._session.send_checkpoint()  # 点击发送前的取消检查点
+            element.click()
+            return "clicked"
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + budget
+        max_rounds = max(1, math.floor(budget / interval) + 1)
+        rounds = 0
+        while rounds < max_rounds:
+            rounds += 1
+            if await self._call(attempt) == "gone":
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(interval, remaining))
+        return False
 
     @journaled("click")
     async def click(self, target: Target) -> None:
