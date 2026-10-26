@@ -376,3 +376,26 @@ spec:.scratch/scrcpy-upstream/(协议对照 v5.0.1 源码逐项核实);提交 63
   (原为横屏则按原值),再 `adb -s 749622c9 shell settings put system
   accelerometer_rotation 1` 恢复自动旋转。
 
+## wait_gone / click_until_gone 原语与 index 语义(2026-10-26,工单 05)
+
+- **目标**:把"等某个东西消失/点到它消失"从用例手写轮询变成原语;用例里
+  不再出现 `while True: if not visible: break` 的消失轮询。两者为契约外
+  便捷方法,绑定层需转发(见 `docs/integration.md` §12)。
+- **单元验证**:`tests/unit/test_wait_gone.py` 覆盖 visible→visible→gone 时
+  点击 2 次返回 True、预算耗尽返回 False 且点击数 ≈ ⌈timeout/interval⌉、
+  `AmbiguousTarget` 透传不重试、IMAGE 路径、非法 `timeout`/`interval`、
+  设备错误透传,以及预算耗尽时动作流水只有一行 `outcome="not_found"`。
+- **真机验证:待补**。本次实现环境无可用设备,未录 Beta Academy
+  "点击关闭弹窗直到消失"(当日无弹窗则用设置页搜索建议下拉替代)场景;
+  接入真机后按工单 05 测试节补录返回值语义与耗时。
+- **`reset_uiautomator()` 恢复路径不实现**:该恢复是设备写操作(重启
+  uiautomator server / 强制重连 u2),可能在他人持有时打断服务,且不在
+  契约面。触发条件:同一会话连续多次 `dump_ui` 超时,`is_visible`/
+  `wait_for` 在设备仍在线时持续报 `HTTPTimeoutError`,且
+  `session.state` 仍为 LEASED。观察方式:失败证据 `meta.not_captured`
+  出现 `UI 树取证未完成(HTTPTimeoutError)`,或动作流水连续
+  `outcome="error"`(且 `error_type` 为 `HTTPTimeoutError`);此时人工重连
+  设备或在 setup 阶段重启 u2,不自动重启。
+- **`index` 语义**:`Target.index` 为树遍历序(uiautomator 层级顺序),
+  不是视觉位置序;详见 `docs/integration.md` §1 与 `core/selectors.py`
+  模块 docstring。

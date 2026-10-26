@@ -35,6 +35,11 @@ CONTRACT_METHODS = [
 # 其余 14 个方法必须为异步可调用。
 IMPLEMENTED_METHODS = [m for m in CONTRACT_METHODS if m != "extract_list"]
 
+# 契约外便捷方法:15 方法签名与语义不变,但它们是适配器公共面的一部分
+# (工单 05 的消失等待原语)。单独白名单列明,避免"契约面封闭"断言
+# 误把它们当成漏登记的方法;新增同类方法须同步更新本集合与 docs/integration.md §12。
+EXTRA_PUBLIC_METHODS = {"wait_gone", "click_until_gone"}
+
 
 @pytest.mark.parametrize("name", IMPLEMENTED_METHODS)
 def test_contract_method_exists_and_is_async(name):
@@ -49,8 +54,10 @@ def test_extract_list_declared_not_implemented():
 
 
 def test_contract_surface_is_closed():
-    # 契约面封闭:除清单内 14 个方法外无其他公共方法;新增须更新清单与文档
-    extra = set(IMPLEMENTED_METHODS) ^ {
+    # 契约面封闭:除清单内 14 个方法与显式白名单的契约外便捷方法外无其他
+    # 公共方法;新增须更新清单、白名单与文档
+    extra = set(IMPLEMENTED_METHODS) | EXTRA_PUBLIC_METHODS
+    extra ^= {
         n
         for n in dir(MobileAdapter)
         if not n.startswith("_") and n != "platform" and callable(getattr(MobileAdapter, n))
