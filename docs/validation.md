@@ -362,3 +362,78 @@ spec:.scratch/scrcpy-upstream/(协议对照 v5.0.1 源码逐项核实);提交 63
 - **`index` 语义**:`Target.index` 为树遍历序(uiautomator 层级顺序),
   不是视觉位置序;详见 `docs/integration.md` §1 与 `core/selectors.py`
   模块 docstring。
+
+## 模板密度感知缩放(工单 02,2026-10-26)
+
+### 探针闸门:未执行(当前无设备)
+
+0.5 天探针闸门的**真机部分未执行**:本次实现环境无可用设备,下文不含
+任何实测密度帧、拟合比或树 diff,也不据此收紧搜索范围。执行机型参考
+749622c9(实测 1080×2400 / 440 dpi)。
+
+命令(记录原值;无论中间是否失败,`finally` 必须复位密度):
+
+```powershell
+$serial = "749622c9"
+$orig = adb -s $serial shell wm density        # 记录 Physical/Override 原值
+try {
+  adb -s $serial shell wm density 480          # 覆盖到 480,理论尺度 480/440 = 1.0909
+  adb -s $serial exec-out screencap -p > artifacts/probe-density-480.png
+  adb -s $serial shell uiautomator dump /sdcard/tree-480.xml
+  adb -s $serial pull /sdcard/tree-480.xml artifacts/probe-tree-480.xml
+} finally {
+  adb -s $serial shell wm density reset
+}
+adb -s $serial shell wm density                # 确认复位(与原值一致)
+adb -s $serial exec-out screencap -p > artifacts/probe-density-orig.png
+adb -s $serial shell uiautomator dump /sdcard/tree-orig.xml
+adb -s $serial pull /sdcard/tree-orig.xml artifacts/probe-tree-orig.xml
+```
+
+同一页面(不导航、不滚动、不弹键盘)采两帧两树后回答三问:
+
+1. **内容是否仅均匀放大**:两棵 UI 树结构/节点数一致,同节点 bounds
+   按 480/440 等比放大;出现重排(节点增减、换行、隐藏)即为"否"。
+2. **尺度是否稳定**:多元素拟合出的尺度是否一致且接近理论 1.0909;
+   记录各元素实测比与离散程度(即 `_adapt_scale` 的 span 校准依据)。
+3. **资源桶是否切换**:dp 宽度 393→360 是否跨断点,应用是否加载
+   `values-sw360dp/` 等另一套资源(布局可能非均匀变化)。
+
+判定与降级路径:
+
+- 三问全过 → 密度路径按当前实现生效;用实测抖动收紧 `_adapt_scale`
+  的 span(当前沿用 `_SCALE_SPAN=1.3`,粗扫 0.05 / 细扫 0.01 不收紧,
+  理由见 `imaging/engine.py` 模块 docstring)。
+- 任一不过 → 本工单降级为**文档约定:模板限同 density 设备复用**,
+  不改算法、不当场加宽尺度范围硬试;把探针输出作为降级依据登记在此。
+
+### 合成验证(已完成,不代替真机)
+
+- 跨密度(同分辨率):`tests/unit/test_density_scaling.py` 用同一合成帧
+  裁模板、当前帧按 480/440 缩放并居中回原尺寸;旧单尺度路径 0 命中,
+  `source_density=440, current_density=480` 命中且中心容差 ≤2px。
+- 回归:同密度/同分辨率、仅单侧密度、相对差 ≤2%(440→448)、分辨率
+  不同(面积比)四条路径与旧实现逐字段一致;旧 meta(无 density)不
+  触发密度路径,也不新增设备调用。
+- 负向:真实负样本(`tests/fixtures/images`:目标不在该页、滚动前不可见、
+  同形异色 `t-icon-recolor`)在密度路径下仍为 0 命中,阈值未放宽。
+- 贯通:`tests/unit/test_density_plumbing.py` 覆盖 `wm density` 解析
+  (Override 优先)、会话缓存与 `refresh_density()`、适配器仅在模板带
+  density 时读密度、图像句柄重校验共用同一组密度、viewer
+  `_query_payload` 复用 `selectors.image_match_kwargs`、快照密度登记进
+  模板 meta。store v3 校验见 `tests/unit/test_assets.py`(v2 旧 meta 可
+  加载,非法 density 拒绝)。
+
+### 刷新时机与已知限制
+
+- 密度缓存:会话内缓存一次(`DeviceSession.density`);viewer 每次
+  采集/验证调用 `refresh_density()`(真实调用点),跟随 `wm density`
+  覆盖;适配器只对 meta 带 density 的模板读取缓存,旧模板零额外调用。
+- **字体缩放(`font_scale`)未记录**:含文字的模板在字体缩放不同的
+  设备上会非均匀失配,密度路径不解决;本工单不实现。
+- **响应式重排不解决**:跨 dp 断点导致的重排属探针闸门第 ③ 问,任一
+  不过即按上面降级。
+- **真机项待补**:跨密度样本(同机 `wm density` 覆盖)与真实负样本
+  真机复跑未执行;84cb2c4e(Android 17)当前离线,双机对照仍为待补项。
+  现有 `tests/device` 用例在无设备时 skip,未弱化任何断言。
+
