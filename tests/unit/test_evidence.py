@@ -96,6 +96,8 @@ def test_evidence_written_and_registered(tmp_path):
         "app_package": "com.demo",
         "screen_size": [1080, 2400],
         "dialog_guard": {"attempts": 0, "dismissed": [], "last_at": None},
+        # 未发生注入的会话没有坐标基准记录
+        "coordinate_spaces": None,
     }
     assert meta["journal_summary"] is None  # 未挂接动作流水的会话
     kinds = {a["kind"] for a in meta["artifacts"]}
@@ -179,6 +181,28 @@ def test_evidence_never_contains_input_text(tmp_path):
     )
     meta_text = json.dumps(record, ensure_ascii=False)
     assert "SECRET-PASSWORD-123" not in meta_text  # 输入值从未进入证据
+
+
+def test_evidence_records_coordinate_spaces(tmp_path):
+    session = StubSession(tmp_path)
+    session.last_coordinate_basis = {
+        "channel": [2400, 1080],
+        "backend": [2400, 1080],
+        "refreshed": True,
+        "refreshable": True,
+        "consistent": True,
+        "checked_at": "2026-10-26T00:00:00.000Z",
+    }
+    record = collect_failure_evidence(session, "失败")
+    base = tmp_path / "evidence" / record["evidence_id"]
+    meta = json.loads((base / "meta.json").read_text(encoding="utf-8"))
+    spaces = meta["device"]["coordinate_spaces"]
+    assert spaces["channel"] == [2400, 1080]
+    assert spaces["backend"] == [2400, 1080]
+    assert spaces["refreshed"] is True
+    # 读取方拿到副本,修改不污染会话快照
+    spaces["channel"].append(1)
+    assert session.last_coordinate_basis["channel"] == [2400, 1080]
 
 
 def test_manifest_survives_corrupt_lines(tmp_path):

@@ -339,6 +339,11 @@ def _record(
             if channel:
                 extra = dict(extra or {})
                 extra["channel"] = channel
+            # 坐标基准(工单 04):仅实际走通道的注入有记录;u2 路径留空
+            basis = getattr(session, "last_coordinate_basis", None)
+            if basis:
+                extra = dict(extra or {})
+                extra["coordinate_basis"] = basis
         journal.record(
             op,
             target=target,

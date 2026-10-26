@@ -21,6 +21,7 @@ import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import UTC, datetime
 from typing import TypeVar
 
 from ..config import MobileConfig
@@ -37,6 +38,66 @@ T = TypeVar("T")
 _CLOSE_DRAIN_TIMEOUT_SECONDS = 10.0
 _SCRCPY_FAIL_LIMIT = 3  # 连续失败次数达到后降级 u2(plan P1 工单 03)
 _SCRCPY_DEGRADE_SECONDS = 60.0  # 降级持续时长,到期再试一次以探测恢复
+# 坐标基准校验间隔:注入前对比缓存尺寸与实时 wm size 并刷新的最小周期
+_COORDINATE_BASIS_INTERVAL_SECONDS = 1.0
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _safe_screen_size(source) -> tuple[int, int] | None:
+    """读取尺寸;通道/后端不可用时返回 None(保鲜不得新增注入失败点)。"""
+    getter = getattr(source, "screen_size", None)
+    if getter is None:
+        return None
+    try:
+        width, height = getter()
+    except Exception:
+        return None
+    return int(width), int(height)
+
+
+def _can_refresh(channel) -> bool:
+    """通道是否真的能重探基准;未声明时以是否实现刷新方法为准。"""
+    flag = getattr(channel, "can_refresh_screen_size", None)
+    if flag is not None:
+        return bool(flag)
+    return callable(getattr(channel, "refresh_screen_size", None))
+
+
+def _same_aspect(first: tuple[int, int], second: tuple[int, int]) -> bool:
+    """宽高比一致(容忍 1% 取整误差):视频缩放后的同一显示区。"""
+    aw, ah = first
+    bw, bh = second
+    if not ah or not bh:
+        return False
+    left = aw * bh
+    right = bw * ah
+    return abs(left - right) <= 0.01 * max(left, right, 1)
+
+
+def _basis_matches(
+    channel_size: tuple[int, int],
+    backend_size: tuple[int, int],
+    refreshable: bool,
+) -> bool:
+    """通道基准是否可用于本次注入。
+
+    可刷新通道要求数值一致(wm size 同源);不可刷新通道允许视频缩放,
+    只要求宽高比一致。
+    """
+    if channel_size == backend_size:
+        return True
+    return not refreshable and _same_aspect(channel_size, backend_size)
+
+
+def _copy_basis(basis: dict) -> dict:
+    copied = dict(basis)
+    for key in ("channel", "backend"):
+        value = copied.get(key)
+        copied[key] = list(value) if value else None
+    return copied
 
 
 class SessionState(enum.StrEnum):
@@ -145,7 +206,12 @@ class DeviceSession:
         self._session_id = uuid.uuid4().hex[:8]
         self._injection_lock = threading.Lock()
         self._last_injection_channel: str | None = None
+        self._last_coordinate_basis: dict | None = None
         self._journal = None
+        # 坐标基准保鲜(工单 04):缓存按通道对象失效,仅在设备队列线程读写
+        self._basis_channel = None
+        self._basis_checked_at = 0.0
+        self._basis_cached: dict | None = None
 
     @property
     def config(self) -> MobileConfig:
@@ -192,9 +258,10 @@ class DeviceSession:
         self._journal = journal
 
     def begin_operation(self) -> None:
-        """公共操作开始:清空上一次的注入通道快照。"""
+        """公共操作开始:清空上一次的注入通道与坐标基准快照。"""
         with self._injection_lock:
             self._last_injection_channel = None
+            self._last_coordinate_basis = None
 
     @property
     def last_injection_channel(self) -> str | None:
@@ -202,10 +269,86 @@ class DeviceSession:
         with self._injection_lock:
             return self._last_injection_channel
 
+    @property
+    def last_coordinate_basis(self) -> dict | None:
+        """最近一次注入前的坐标基准快照;未注入过(或 u2 路径)为 None。"""
+        with self._injection_lock:
+            basis = self._last_coordinate_basis
+        return None if basis is None else _copy_basis(basis)
+
     def _note_injection_channel(self, channel: str) -> str:
         with self._injection_lock:
             self._last_injection_channel = channel
         return channel
+
+    def _note_coordinate_basis(self, basis: dict) -> None:
+        with self._injection_lock:
+            self._last_coordinate_basis = basis
+
+    def ensure_coordinate_basis(self, backend, channel) -> dict:
+        """注入前校验并保鲜坐标基准;必须在设备队列线程内调用。
+
+        比较通道缓存的屏幕尺寸与后端实时尺寸(u2 ``window_size`` 即
+        ``wm size``)。不一致且通道可刷新时调用 ``refresh_screen_size()``
+        并重读,返回本次实际使用的基准;同会话同通道对象 1 秒内最多
+        校验一次(含一次 ``wm size`` 往返),通道对象变化(监督器重建)
+        立即重校验。
+
+        上游通道(``stream_backend="upstream"``)的 ``refresh_screen_size``
+        是空实现,且 ``screen_size`` 来自视频会话元包(可能被 max_size
+        缩放、旋转时由泵线程自动更新)。因此对不可刷新通道只比较宽高比:
+        比例一致视为同一显示区的视频缩放;比例不一致如实记录
+        ``refreshed=False, refreshable=False, consistent=False``,不调用
+        空实现伪装刷新成功,也不改道注入通道。
+
+        只观测与保鲜:通道/后端读尺寸失败分别记 None,不抛出新的失败;
+        刷新失败在基准里记 ``refresh_error`` 后继续注入。
+        """
+        now = time.monotonic()
+        cached = self._basis_cached
+        if (
+            cached is not None
+            and self._basis_channel is channel
+            and now - self._basis_checked_at < _COORDINATE_BASIS_INTERVAL_SECONDS
+        ):
+            self._note_coordinate_basis(cached)
+            return _copy_basis(cached)
+
+        channel_size = _safe_screen_size(channel)
+        backend_size = _safe_screen_size(backend)
+        refreshable = _can_refresh(channel)
+        refreshed = False
+        refresh_error = None
+        consistent: bool | None = None
+        if channel_size is not None and backend_size is not None:
+            consistent = _basis_matches(channel_size, backend_size, refreshable)
+            if not consistent and refreshable:
+                try:
+                    channel.refresh_screen_size()
+                except Exception as exc:  # 刷新失败不阻断注入,基准如实降级
+                    refresh_error = type(exc).__name__
+                else:
+                    new_size = _safe_screen_size(channel)
+                    if new_size is not None:
+                        refreshed = new_size != channel_size
+                        channel_size = new_size
+                consistent = _basis_matches(channel_size, backend_size, refreshable)
+
+        basis = {
+            "channel": list(channel_size) if channel_size else None,
+            "backend": list(backend_size) if backend_size else None,
+            "refreshed": refreshed,
+            "refreshable": refreshable,
+            "consistent": consistent,
+            "checked_at": _utc_now(),
+        }
+        if refresh_error is not None:
+            basis["refresh_error"] = refresh_error
+        self._basis_channel = channel
+        self._basis_checked_at = now
+        self._basis_cached = basis
+        self._note_coordinate_basis(basis)
+        return _copy_basis(basis)
 
     # ── 生命周期 ─────────────────────────────────────────────
 
@@ -346,6 +489,11 @@ class DeviceSession:
         手势安全由手势闭包保证(device_ops.gesture 实现):首写(DOWN)
         前失败报 _CleanFallback → 整体回退 u2;DOWN 后失败闭包内已抬指
         收尾,此处如实传播不重放(避免双注入)。
+
+        坐标基准:实际走 scrcpy 通道(含显式 ``source="scrcpy"``)时,首写
+        之前调用 :meth:`ensure_coordinate_basis` 校验/刷新并记录基准;显式
+        scrcpy 只校验不改道。``source="u2"`` 与降级窗口内直接走 u2 的路径
+        不经通道,不存在通道基准,故不校验。
         """
         from .device_ops import _CleanFallback
 
@@ -364,6 +512,7 @@ class DeviceSession:
                 raise
             u2_gesture()
             return self._note_injection_channel("u2")
+        self.ensure_coordinate_basis(backend, channel)
         try:
             scrcpy_gesture(channel)
         except _CleanFallback as failure:

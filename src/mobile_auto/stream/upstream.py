@@ -70,6 +70,10 @@ def upstream_asset() -> Path:
 class UpstreamChannel:
     """单台设备的上游 scrcpy 通道;方法同步,跨线程经设备队列串行调用。"""
 
+    # 坐标基准来自视频会话元包(可能被 max_size 缩放),无强制重探能力:
+    # refresh_screen_size 仅为接口同形而保留,不能修复基准(工单 04)
+    can_refresh_screen_size = False
+
     def __init__(
         self,
         serial: str,
@@ -381,7 +385,14 @@ class UpstreamChannel:
         return buf.tobytes()
 
     def refresh_screen_size(self) -> None:
-        """分辨率变化由会话元包自动更新;保留接口与 wetest 通道同形。"""
+        """接口同形保留:实际不重探(``can_refresh_screen_size = False``)。
+
+        基准 ``_screen`` 来自视频会话元包,可能被 max_size 缩放;旋转/分辨率
+        变化时由泵线程在下一会话元包自动更新。主动 ``wm size`` 重探会把
+        视频坐标空间替换为设备坐标空间,破坏缩放映射,故不在此实现。
+        Session 的基准保鲜对不可刷新通道只比较宽高比,不调用本方法伪装
+        刷新成功(工单 04)。
+        """
         with self._lock:
             if self._screen is None:
                 raise StreamUnavailable("上游 scrcpy 通道未启动")

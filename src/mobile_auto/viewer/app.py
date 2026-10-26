@@ -1065,6 +1065,11 @@ def create_app(
             values.append(min(max(float(value), 0.0), 1.0))
         return values
 
+    def _fresh_channel_size(session, backend, channel):
+        """在设备队列线程内保鲜坐标基准,返回本次注入实际使用的通道尺寸。"""
+        session.ensure_coordinate_basis(backend, channel)
+        return channel.screen_size()
+
     def _inject(
         session: DeviceSession,
         manager: _ChannelManager,
@@ -1072,6 +1077,7 @@ def create_app(
         *,
         op,
         extra=None,
+        basis=False,
     ):
         """短事务注入:租约(409 门控)→ 队列串行执行 → 释放。
 
@@ -1079,44 +1085,62 @@ def create_app(
         同一租约门控;超时且任务仍在运行时,租约保留至任务实际结束
         (经 _LeaseGuard 移交),失败时如实报错。动作流水只观察,不改变
         注入结果(viewer 侧始终写 <artifacts>/viewer/<serial>/actions.jsonl)。
+
+        坐标类操作在队列任务内先经 session.ensure_coordinate_basis 保鲜
+        基准(实时 wm size / 刷新均为阻塞调用,不能发生在事件循环线程),
+        再取 channel.screen_size() 换算归一化坐标;basis=True 时把本次
+        实际基准并入 journal 行。
         """
         journal = session.journal
         started = time.monotonic()
+        used_basis: list[dict] = []
         try:
             with _LeaseGuard(session) as guard:
                 channel = manager.get()
                 if channel is None or not channel.healthy():
                     raise StreamUnavailable("视频流通道不可用,无法注入")
+
+                def run(backend):
+                    try:
+                        return operation(channel, backend)
+                    finally:
+                        if basis:
+                            current = session.last_coordinate_basis
+                            if current is not None:
+                                used_basis.append(current)
+
                 _submit_bounded(
                     session,
                     guard,
-                    lambda backend: operation(channel),
+                    run,
                     timeout=10.0,
                     error_message="注入执行超时",
                 )
         except Exception as exc:
             if journal is not None:
-                # 失败时通道未必真的用上,不臆造 channel
-                error_extra = (
-                    {key: value for key, value in extra.items() if key != "channel"}
-                    if extra
-                    else None
-                )
+                # 失败时通道未必真的用上,不臆造 channel;基准有则如实保留
+                error_extra = dict(extra or {})
+                error_extra.pop("channel", None)
+                if used_basis:
+                    error_extra["coordinate_basis"] = used_basis[-1]
                 journal.record(
                     op,
                     duration_ms=(time.monotonic() - started) * 1000,
                     outcome="error",
                     error_type=type(exc).__name__,
-                    extra=error_extra,
+                    extra=error_extra or None,
                 )
             raise
         else:
             if journal is not None:
+                ok_extra = dict(extra or {})
+                if used_basis:
+                    ok_extra["coordinate_basis"] = used_basis[-1]
                 journal.record(
                     op,
                     duration_ms=(time.monotonic() - started) * 1000,
                     outcome="ok",
-                    extra=extra,
+                    extra=ok_extra or None,
                 )
 
     @app.post("/api/v1/input/touch")
@@ -1135,16 +1159,17 @@ def create_app(
                 _inject,
                 session,
                 manager,
-                lambda channel: channel.tap(
+                lambda channel, backend: channel.tap(
                     *(
                         lambda size: (
                             int(nx * size[0]),
                             int(ny * size[1]),
                         )
-                    )(channel.screen_size())
+                    )(_fresh_channel_size(session, backend, channel))
                 ),
                 op="viewer.tap",
                 extra={"point": [nx, ny], "normalized": True, "channel": "scrcpy"},
+                basis=True,
             )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)
@@ -1173,7 +1198,7 @@ def create_app(
                 _inject,
                 session,
                 manager,
-                lambda channel: channel.swipe(
+                lambda channel, backend: channel.swipe(
                     *(
                         lambda size: (
                             int(nx0 * size[0]),
@@ -1181,7 +1206,7 @@ def create_app(
                             int(nx1 * size[0]),
                             int(ny1 * size[1]),
                         )
-                    )(channel.screen_size()),
+                    )(_fresh_channel_size(session, backend, channel)),
                     duration_s=duration_s,
                 ),
                 op="viewer.swipe",
@@ -1191,6 +1216,7 @@ def create_app(
                     "normalized": True,
                     "channel": "scrcpy",
                 },
+                basis=True,
             )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)
@@ -1210,7 +1236,7 @@ def create_app(
                 _inject,
                 session,
                 manager,
-                lambda channel: channel.press_key(name),
+                lambda channel, _backend: channel.press_key(name),
                 op="viewer.press_key",
                 extra={"key": name, "channel": "scrcpy"},
             )
@@ -1230,7 +1256,7 @@ def create_app(
                 _inject,
                 session,
                 manager,
-                lambda channel: channel.wake(),
+                lambda channel, _backend: channel.wake(),
                 op="viewer.wake",
             )
         except MobileAutoError as exc:
