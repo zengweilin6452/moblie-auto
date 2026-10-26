@@ -126,6 +126,9 @@ class DeviceSession:
         self._serial: str | None = None
         self._backend: DeviceBackend | None = None
         self._lease = None
+        # 设备密度(工单 02):会话内缓存,`wm density` 为权威来源
+        self._density: int | None = None
+        self._density_loaded = False
         self._pending = 0  # 已提交未完成(排队+运行)的操作数
         self._op_states: dict[Future, _OpState] = {}
         self._outcomes: dict[Future, str] = {}  # 完成操作的固化结局
@@ -158,6 +161,37 @@ class DeviceSession:
     @property
     def serial(self) -> str | None:
         return self._serial
+
+    # ── 设备密度(工单 02)──────────────────────────────────────
+
+    def density(self, backend: DeviceBackend) -> int | None:
+        """取会话缓存的设备密度;尚未读取时读一次 `wm density`。
+
+        必须在设备队列线程内调用(会访问后端)。读取失败返回 None 且不
+        缓存,下一次调用重试。会话内缓存的依据:一次匹配事务内密度不会
+        变化;设备密度被 `wm density` 覆盖后由调用方显式 refresh_density。
+        """
+        with self._lock:
+            if self._density_loaded:
+                return self._density
+        return self.refresh_density(backend)
+
+    def refresh_density(self, backend: DeviceBackend) -> int | None:
+        """重读 `wm density` 并刷新缓存;viewer 每次采集都调用(真实调用点)。
+
+        失败返回 None 并保留上一次成功值(不清空已知密度);本次匹配由
+        调用方退化为旧路径。清理时机:会话关闭后缓存随会话丢弃。
+        """
+        try:
+            value = backend.screen_density()
+        except Exception:  # 密度是可选加速信息:失败不报错,退化为旧行为
+            return None
+        if value is None:
+            return None
+        with self._lock:
+            self._density = value
+            self._density_loaded = True
+        return value
 
     @property
     def dialog_guard_stats(self) -> dict:

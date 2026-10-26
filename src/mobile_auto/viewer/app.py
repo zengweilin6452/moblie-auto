@@ -730,6 +730,7 @@ def create_app(
             "width": snapshot.width,
             "height": snapshot.height,
             "orientation": snapshot.orientation,
+            "density": snapshot.density,
             "captured_at": snapshot.captured_at,
             "tree_captured_at": snapshot.tree_captured_at,
             "tree_error": snapshot.tree_error,
@@ -1394,11 +1395,11 @@ def capture_snapshot_sync(session: DeviceSession, with_tree: bool) -> Snapshot:
         payload = _submit_bounded(
             session,
             guard,
-            lambda backend: _capture_payload(backend, with_tree),
+            lambda backend: _capture_payload(session, backend, with_tree),
             timeout=_CAPTURE_TIMEOUT_SECONDS,
             error_message="采集超时",
         )
-    png, width, height, tree_xml, tree_error = payload
+    png, width, height, tree_xml, tree_error, density = payload
     now = datetime.now(UTC)
     return Snapshot(
         png=png,
@@ -1410,6 +1411,7 @@ def capture_snapshot_sync(session: DeviceSession, with_tree: bool) -> Snapshot:
         tree_captured_at=now.isoformat(timespec="milliseconds") if tree_xml else None,
         tree_error=tree_error,
         tree_root=parse_ui_hierarchy(tree_xml) if tree_xml and len(tree_xml) >= 100 else None,
+        density=density,
     )
 
 
@@ -1429,11 +1431,7 @@ def capture_and_query_sync(
             timeout=_CAPTURE_TIMEOUT_SECONDS,
             error_message="定位验证查询超时",
         )
-    if with_scores:
-        png, screen, matches, scores = payload
-    else:
-        png, screen, matches = payload
-        scores = None
+    png, screen, matches, scores, density = payload
     now = datetime.now(UTC)
     snapshot = Snapshot(
         png=png,
@@ -1441,34 +1439,30 @@ def capture_and_query_sync(
         height=int(screen[1]),
         orientation="portrait" if screen[1] >= screen[0] else "landscape",
         captured_at=now.isoformat(timespec="milliseconds"),
+        density=density,
     )
     store.add(snapshot)
     return (snapshot, matches, scores) if with_scores else (snapshot, matches)
 
 
 def _query_payload(backend, session, store, target: Target):
-    from ..imaging.engine import match_template, validate_capture_center
+    from ..core.selectors import image_match_kwargs
+    from ..imaging.engine import match_template
     from ..imaging.store import TemplateStore
 
     png = backend.screenshot_png()
     screen = backend.screen_size()
+    # 密度取一次(在既有采集事务内):定位验证必须与驱动同一组密度参数,
+    # 否则会出现"验证命中、驱动不命中"。
+    density = session.refresh_density(backend)
     scores = None
     if target.by.value == "image":
         template = TemplateStore(session.config.assets_dir).load(target.value)
-        source = (
-            template.meta.get("source_width"),
-            template.meta.get("source_height"),
-        )
         results = match_template(
             png,
             template.png,
-            confidence=target.confidence,
-            region=target.region,
-            source_resolution=(
-                source if all(isinstance(v, int) for v in source) else None
-            ),
-            capture_center=validate_capture_center(
-                template.meta.get("capture_center")
+            **image_match_kwargs(
+                template.meta, target, current_density=density
             ),
         )
         chosen = select_matches(results, target)
@@ -1491,9 +1485,7 @@ def _query_payload(backend, session, store, target: Target):
                 "height": int(bottom - top),
             }
         )
-    if scores is None:
-        return png, screen, matches
-    return png, screen, matches, scores
+    return png, screen, matches, scores, density
 
 
 def _crop_and_register(session, snapshot, logical, region, body, expected_old):
@@ -1501,6 +1493,7 @@ def _crop_and_register(session, snapshot, logical, region, body, expected_old):
 
     采集中心(P4b)由裁剪区域相对快照中心换算并自动写入 meta,
     匹配侧据此先在预测区域搜索(未命中回退全区域)。
+    采集密度(工单 02)随快照写入 meta:同分辨率跨密度复用模板的依据。
     """
     import numpy as np
 
@@ -1534,6 +1527,7 @@ def _crop_and_register(session, snapshot, logical, region, body, expected_old):
             app_package=session.config.app_package or "",
             note=str(body.get("note") or ""),
             capture_center=capture_center,
+            density=snapshot.density,
         )
     return store.update(
         logical,
@@ -1545,6 +1539,7 @@ def _crop_and_register(session, snapshot, logical, region, body, expected_old):
         app_package=session.config.app_package or "",
         note=str(body.get("note") or ""),
         capture_center=capture_center,
+        density=snapshot.density,
     )
 
 
@@ -1564,11 +1559,13 @@ def _template_payload(loaded):
     }
 
 
-def _capture_payload(backend, with_tree: bool):
+def _capture_payload(session, backend, with_tree: bool):
     png = backend.screenshot_png()
     tree_xml = backend.dump_ui() if with_tree else None
     width, height = backend.screen_size()
-    return png, int(width), int(height), tree_xml, None
+    # 每次采集刷新密度(设备可能被 `wm density` 覆盖);仍在同一采集事务内
+    density = session.refresh_density(backend)
+    return png, int(width), int(height), tree_xml, None, density
 
 
 def _normalized_tree_json(tree_xml: str) -> str | None:

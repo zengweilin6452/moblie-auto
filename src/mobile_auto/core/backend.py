@@ -11,6 +11,7 @@ doctor 不执行这些调用。
 from __future__ import annotations
 
 import io
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -105,6 +106,31 @@ def enumerate_device_states() -> dict[str, str]:
     return {entry.serial: entry.state for entry in entries}
 
 
+# `adb shell wm density` 输出形如:
+#   Physical density: 440
+#   Override density: 480
+# 覆盖值才是当前生效密度(spec Key Decisions:先 Override 再 Physical)。
+_DENSITY_OVERRIDE_RE = re.compile(r"Override density:\s*(\d+)")
+_DENSITY_PHYSICAL_RE = re.compile(r"Physical density:\s*(\d+)")
+
+
+def parse_wm_density(output: str) -> int | None:
+    """解析 `wm density`:优先 Override density,其次 Physical density。
+
+    解析失败或值非正返回 None——密度是可选加速信息,调用方退化为旧行为。
+    """
+    if not isinstance(output, str):
+        return None
+    for pattern in (_DENSITY_OVERRIDE_RE, _DENSITY_PHYSICAL_RE):
+        match = pattern.search(output or "")
+        if match is None:
+            continue
+        value = int(match.group(1))
+        if value > 0:
+            return value
+    return None
+
+
 class BackendElement(Protocol):
     """设备端一个已匹配节点;由后端实现,核心只依赖此形状。"""
 
@@ -132,6 +158,8 @@ class DeviceBackend(Protocol):
     def close(self) -> None: ...
 
     def screen_size(self) -> tuple[int, int]: ...
+
+    def screen_density(self) -> int | None: ...
 
     def find_elements(self, by: Locator, value: str) -> list[BackendElement]: ...
 
@@ -177,6 +205,19 @@ class U2Backend:
     def screen_size(self) -> tuple[int, int]:
         size = self._device.window_size()
         return int(size[0]), int(size[1])
+
+    def screen_density(self) -> int | None:
+        """当前生效 dpi:`wm density` 为权威(先 Override 再 Physical)。
+
+        不用 `d.info` 的 displaySizeDpX:全仓零先例,且 GET_SCREENINFO 的
+        启动竞态会返回视频缩放尺寸(channel.py 同因只信 `wm size`)。
+        调用失败返回 None,由调用方退化为同密度路径。
+        """
+        try:
+            output = self._device.shell("wm density")
+        except Exception:  # 密度是可选加速信息:失败不报错,退化为旧行为
+            return None
+        return parse_wm_density(output)
 
     def find_elements(self, by: Locator, value: str) -> list[BackendElement]:
         if by is Locator.XPATH:

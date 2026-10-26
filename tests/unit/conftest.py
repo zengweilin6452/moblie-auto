@@ -28,6 +28,9 @@ class ViewerBackend:
     def screen_size(self):
         return (150, 200)
 
+    def screen_density(self):
+        return getattr(self, "density", 420)
+
     def find_elements(self, by, value):
         from fakes import FakeElement
 

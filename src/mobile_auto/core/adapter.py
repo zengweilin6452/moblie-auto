@@ -176,10 +176,16 @@ class MobileAdapter:
         from ..imaging.engine import match_prepared
 
         template, prepared = self._templates.get(self._store(), target.value)
+        current_density = None
+        if template.meta.get("density") is not None:
+            # 旧模板(无 density)不探测密度:行为与调用次数都与现在一致
+            current_density = self._session.density(backend)
         results = match_prepared(
             self._session.screenshot_bytes(backend),
             prepared,
-            **image_match_kwargs(template.meta, target),
+            **image_match_kwargs(
+                template.meta, target, current_density=current_density
+            ),
         )
         return template.meta, results
 

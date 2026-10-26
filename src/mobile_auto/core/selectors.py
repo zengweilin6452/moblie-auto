@@ -209,16 +209,23 @@ def revalidate_handle(backend, handle: ElementHandle):
 IMAGE_HANDLE_IOU_MIN = 0.5  # 图像句柄位置一致性下限(plan 6.2;校准初值)
 
 
-def image_match_kwargs(template_meta: dict, target: Target) -> dict:
+def image_match_kwargs(
+    template_meta: dict, target: Target, *, current_density: int | None = None
+) -> dict:
     """模板 meta + Target → 引擎匹配参数;图像查询与句柄重校验共用。
 
     两条路径必须用同一套 confidence/region/source_resolution/
-    capture_center:查询走采集位置先验、重校验走全图时,远处同图
-    实例会让刚查到的句柄重校验即报 StaleHandle。
+    capture_center/source_density/current_density:查询走采集位置先验、
+    重校验走全图时,远处同图实例会让刚查到的句柄重校验即报 StaleHandle;
+    密度只在一侧传入会让"验证命中、驱动不命中"。meta 的 density 为可选
+    正整数(旧模板缺字段按 None,不触发密度路径)。
     """
     from ..imaging.engine import validate_capture_center
 
     source = (template_meta.get("source_width"), template_meta.get("source_height"))
+    density = template_meta.get("density")
+    if isinstance(density, bool) or not isinstance(density, int) or density <= 0:
+        density = None
     return {
         "confidence": target.confidence,
         "region": target.region,
@@ -226,6 +233,8 @@ def image_match_kwargs(template_meta: dict, target: Target) -> dict:
             source if all(isinstance(v, int) for v in source) else None
         ),
         "capture_center": validate_capture_center(template_meta.get("capture_center")),
+        "source_density": density,
+        "current_density": current_density,
     }
 
 
@@ -276,11 +285,18 @@ def revalidate_image_handle(backend, handle: ElementHandle, store) -> ImageNode:
         raise StaleHandle(f"屏幕方向变化:{orientation}")
     from ..imaging.engine import match_prepared, prepare_template
 
+    # 密度(工单 02):仅模板带 density 时才探测设备,旧模板零额外设备调用;
+    # 与查询路径共用会话缓存(owner 即发起查询的会话)。
+    current_density = None
+    if template.meta.get("density") is not None and handle.owner is not None:
+        current_density = handle.owner.density(backend)
     prepared = prepare_template(template.png, what=f"模板 {target.value}")
     results = match_prepared(
         backend.screenshot_png(),
         prepared,
-        **image_match_kwargs(template.meta, target),
+        **image_match_kwargs(
+            template.meta, target, current_density=current_density
+        ),
     )
     matches = select_matches(results, target)
     if not matches:

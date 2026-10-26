@@ -3,7 +3,7 @@
 布局(资产根目录 assets_dir 下):
   manifest.json                     清单:逻辑名 → 当前版本(原子替换)
   versions/<version_id>/image.png   版本图片(不可变)
-  versions/<version_id>/meta.json   版本元数据(schema_version=2)
+  versions/<version_id>/meta.json   版本元数据(schema_version=3)
 
 不变量:图片与元数据成对完整写入并校验通过后,清单才经 os.replace
 原子切换;任一步失败旧版本保持可见,不存在"新图片配旧摘要"的中间状态。
@@ -13,6 +13,10 @@
 schema v2(P4b):meta 增可选 capture_center(采集中心相对屏幕中心的
 归一化偏移,engine.capture_center_from_region 产生);旧模板无此字段
 时匹配自动退化为全区域搜索,前向兼容。
+
+schema v3(P2 工单 02):meta 增可选 density(采集设备 dpi,正整数);
+旧模板缺字段按 None 处理,匹配退化为单尺度(旧行为)。load 不校验
+schema_version,只校验字段本身,故 v1/v2 资产无需迁移。
 """
 
 from __future__ import annotations
@@ -31,9 +35,18 @@ from ..errors import DuplicateTemplate, InvalidTemplate, StaleHandle
 from .engine import decode_rgb, validate_capture_center
 
 MANIFEST_NAME = "manifest.json"
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _ID_RE = re.compile(r"[0-9a-f]{32}")
 _ORIENTATIONS = ("portrait", "landscape")
+
+
+def _validate_density(density) -> int | None:
+    """可选采集密度:None 或正整数 dpi;bool 不算整数,0/负数拒绝。"""
+    if density is None:
+        return None
+    if isinstance(density, bool) or not isinstance(density, int) or density <= 0:
+        raise InvalidTemplate(f"density 必须是正整数 dpi(采集设备密度):{density!r}")
+    return density
 
 
 def _utc_now() -> str:
@@ -113,6 +126,7 @@ class TemplateStore:
         if meta.get("image_sha256") != entry.get("image_sha256"):
             raise InvalidTemplate(f"模板 {logical} 清单摘要与版本元数据不一致")
         validate_capture_center(meta.get("capture_center"))  # v2 字段,非法即拒绝
+        _validate_density(meta.get("density"))  # v3 字段,非法即拒绝
         return LoadedTemplate(
             logical=logical,
             version_id=version_id,
@@ -136,16 +150,20 @@ class TemplateStore:
         app_package: str = "",
         note: str = "",
         capture_center: tuple[float, float] | None = None,
+        density: int | None = None,
     ) -> LoadedTemplate:
         """登记新模板(也是旧模板的专门导入步骤);同名默认拒绝。
 
         capture_center(P4b,可选):采集中心归一化偏移,提供时写入 meta,
         匹配侧先在预测区域搜索;缺省为全区域搜索,行为与 v1 相同。
+        density(工单 02,可选):采集设备 dpi,提供时写入 meta;缺省时
+        匹配侧不启用密度缩放,行为与旧版本相同。
         同名是冲突(409 语义),区别于其他模板输入非法(422);两者同为
         InvalidTemplate 子类,按 InvalidTemplate 捕获的既有调用方不受影响。
         """
         logical = validate_logical_path(logical)
         capture_center = validate_capture_center(capture_center)
+        density = _validate_density(density)
         with self._asset_lock():
             if logical in self._read_manifest()["templates"]:
                 raise DuplicateTemplate(
@@ -153,7 +171,7 @@ class TemplateStore:
                 )
             version = self._build_version(logical, png, source_width, source_height,
                                           orientation, app_package, note,
-                                          capture_center)
+                                          capture_center, density)
             self._write_version_files(version)
             self._switch_manifest(logical, version, previous=None)
         return self.load(logical)
@@ -170,15 +188,17 @@ class TemplateStore:
         app_package: str = "",
         note: str = "",
         capture_center: tuple[float, float] | None = None,
+        density: int | None = None,
     ) -> LoadedTemplate:
         """更新为新版本:锁内校验旧摘要,成对写入校验后清单才原子切换。
 
-        capture_center 语义同 create;不提供时新版本 meta 不含该字段
-        (继承须显式重新传入,不静默沿用旧值)。
+        capture_center/density 语义同 create;不提供时新版本 meta 不含该
+        字段(继承须显式重新传入,不静默沿用旧值)。
         摘要与当前版本不符报 StaleHandle(冲突);任一步失败旧版本保持可见。
         """
         logical = validate_logical_path(logical)
         capture_center = validate_capture_center(capture_center)
+        density = _validate_density(density)
         if not re.fullmatch(r"[0-9a-f]{64}", expected_old_sha256 or ""):
             raise InvalidTemplate("expected_old_sha256 必须是 64 位十六进制摘要")
         with self._asset_lock():
@@ -192,7 +212,7 @@ class TemplateStore:
                 )
             version = self._build_version(logical, png, source_width, source_height,
                                           orientation, app_package, note,
-                                          capture_center)
+                                          capture_center, density)
             self._write_version_files(version)
             self._switch_manifest(logical, version, previous=entry)
         return self.load(logical)
@@ -200,7 +220,8 @@ class TemplateStore:
     # ── 内部 ─────────────────────────────────────────────────
 
     def _build_version(self, logical, png, source_width, source_height,
-                       orientation, app_package, note, capture_center=None) -> dict:
+                       orientation, app_package, note, capture_center=None,
+                       density=None) -> dict:
         decoded = decode_rgb(png, what=f"模板 {logical}")
         width, height = int(decoded.shape[1]), int(decoded.shape[0])
         if not isinstance(source_width, int) or not isinstance(source_height, int):
@@ -222,6 +243,8 @@ class TemplateStore:
         }
         if capture_center is not None:
             meta["capture_center"] = list(capture_center)
+        if density is not None:
+            meta["density"] = density
         return {
             "version_id": uuid.uuid4().hex,
             "logical": logical,

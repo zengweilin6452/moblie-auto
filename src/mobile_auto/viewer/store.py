@@ -38,6 +38,7 @@ class Snapshot:
     tree_captured_at: str | None = None
     tree_error: str | None = None
     tree_root: object | None = None  # 解析后的 UiNode 根,仅供拾取;不入响应
+    density: int | None = None  # 采集时设备 dpi;模板登记时写入 meta(工单 02)
     frozen: bool = False
     frozen_at: datetime | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])

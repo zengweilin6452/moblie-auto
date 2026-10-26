@@ -33,9 +33,10 @@ def test_create_registers_version_and_load_verifies(tmp_path):
     loaded = store.create("buttons/confirm.png", png, orientation="portrait", **CAPTURE)
     assert loaded.logical == "buttons/confirm.png"
     assert loaded.png == png
-    assert loaded.meta["schema_version"] == 2
+    assert loaded.meta["schema_version"] == 3
     assert loaded.meta["capture_time"]
     assert "capture_center" not in loaded.meta  # 未提供时不含该字段(v1 兼容)
+    assert "density" not in loaded.meta  # 未提供时不含该字段(旧模板兼容)
     assert store.list_templates()["buttons/confirm.png"]["version_id"] == loaded.version_id
 
 
@@ -61,6 +62,49 @@ def test_create_rejects_bad_capture_center(tmp_path, bad):
     with pytest.raises(InvalidTemplate, match="capture_center"):
         store.create("a.png", png_bytes(2), capture_center=bad, **CAPTURE)
     assert store.list_templates() == {}  # 失败登记不留半成品
+
+
+def test_create_and_update_density_roundtrip(tmp_path):
+    """工单 02:密度写入 meta 并随 load 返回;update 同样携带(不静默沿用)。"""
+    store = make_store(tmp_path)
+    created = store.create("a.png", png_bytes(1), density=440, **CAPTURE)
+    assert created.meta["density"] == 440
+    on_disk = json.loads(
+        (tmp_path / "assets" / "versions" / created.version_id / "meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert on_disk["density"] == 440
+    assert store.load("a.png").meta["density"] == 440
+
+    updated = store.update("a.png", png_bytes(2), created.sha256, density=480, **CAPTURE)
+    assert updated.meta["density"] == 480
+    assert store.load("a.png").meta["density"] == 480
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, False, 1.5, "480"])
+def test_create_rejects_bad_density(tmp_path, bad):
+    store = make_store(tmp_path)
+    with pytest.raises(InvalidTemplate, match="density"):
+        store.create("a.png", png_bytes(2), density=bad, **CAPTURE)
+    assert store.list_templates() == {}  # 失败登记不留半成品
+
+
+def test_legacy_v2_meta_without_density_loads(tmp_path):
+    """v2 旧 meta(无 density)加载不受影响,按 None 处理;手改非法值拒绝。"""
+    store = make_store(tmp_path)
+    loaded = store.create("a.png", png_bytes(2), density=440, **CAPTURE)
+    meta_path = tmp_path / "assets" / "versions" / loaded.version_id / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    del meta["density"]
+    meta["schema_version"] = 2
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    assert "density" not in store.load("a.png").meta
+
+    meta["density"] = 0
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(InvalidTemplate, match="density"):
+        store.load("a.png")
 
 
 def test_legacy_meta_without_capture_center_loads(tmp_path):

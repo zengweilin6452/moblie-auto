@@ -31,6 +31,13 @@
   先在预测中心 ± max(模板宽×期望尺度, 150px) 的预测区域搜索,命中即
   返回(多实例语义为"预测区域内的实例"),未命中回退全区域;归一化
   语义与换算见 capture_center_from_region/validate_capture_center
+- 密度路径(P2 工单 02):采集分辨率相同、模板与当前设备密度相对差
+  >2%(_DENSITY_RELATIVE_DIFF_MIN,视为测量噪声)时,期望尺度取
+  s0 = cur_px_per_dp / src_px_per_dp(px_per_dp = density / 160),复用
+  P4a 的有界多尺度搜索。**span 待探针校准**:真机 `wm density` 探针闸门
+  尚未执行(当前无设备),实测抖动未知,故 span 沿用 _SCALE_SPAN=1.3、
+  粗扫 0.05 / 细扫 0.01 均不收紧;闸门命令、三问与待补项见
+  docs/validation.md。校准前不得据理论 1.0909 收窄搜索范围。
 """
 
 from __future__ import annotations
@@ -61,6 +68,9 @@ _SCALE_COARSE_STEP = 0.05  # 粗扫步长
 _SCALE_FINE_STEP = 0.01  # 细扫步长(粗扫最优邻域)
 _SCALE_SEARCH_LONG_EDGE = 800  # 粗细扫在长边不超过此值的降采样图上进行
 _SCALE_TEMPLATE_MIN = 10  # 缩放后模板任一边低于此像素则跳过该尺度
+
+# P2 工单 02:密度路径触发下限(相对差,分母为模板采集密度)
+_DENSITY_RELATIVE_DIFF_MIN = 0.02
 
 # V2 P4b 采集位置先验(capture_center 存在时先在预测区域搜索,未命中回退全区域)
 _PRIOR_MARGIN_MIN = 150  # 预测区域最小边距(px,当前分辨率;Airtest DEVIATION 同量级)
@@ -213,6 +223,8 @@ def match_template(
     region: tuple[int, int, int, int] | None = None,
     source_resolution: tuple[int, int] | None = None,
     capture_center: tuple[float, float] | None = None,
+    source_density: int | None = None,
+    current_density: int | None = None,
 ) -> list[MatchResult]:
     """在截图(或其搜索区域)内匹配模板,返回全截图坐标的匹配结果。
 
@@ -221,6 +233,11 @@ def match_template(
 
     source_resolution 为模板采集时的屏幕分辨率(P4a):与当前截图不一致
     时自动启用有界多尺度搜索;一致或缺省为单尺度,行为与 v1 相同。
+
+    source_density/current_density 为模板采集与当前设备的 dpi(工单 02):
+    仅在分辨率相同(或未提供采集分辨率)且相对差 >2% 时启用密度路径,
+    期望尺度为 cur_px_per_dp / src_px_per_dp;分辨率不同仍用面积比,
+    缺省或同密度时行为与之前完全一致。
 
     capture_center 为模板采集时中心点的归一化偏移(P4b,由
     capture_center_from_region 产生):提供且未显式指定 region 时,先在
@@ -238,6 +255,8 @@ def match_template(
         region,
         source_resolution,
         capture_center,
+        source_density,
+        current_density,
     )
 
 
@@ -249,6 +268,8 @@ def match_prepared(
     region: tuple[int, int, int, int] | None = None,
     source_resolution: tuple[int, int] | None = None,
     capture_center: tuple[float, float] | None = None,
+    source_density: int | None = None,
+    current_density: int | None = None,
 ) -> list[MatchResult]:
     """match_template 的免重复解码入口:模板已通过 prepare_template 校验。"""
     threshold = (
@@ -261,6 +282,8 @@ def match_prepared(
         region,
         source_resolution,
         capture_center,
+        source_density,
+        current_density,
     )
 
 
@@ -271,20 +294,41 @@ def _match_prepared(
     region: tuple[int, int, int, int] | None,
     source_resolution: tuple[int, int] | None = None,
     capture_center: tuple[float, float] | None = None,
+    source_density: int | None = None,
+    current_density: int | None = None,
 ) -> list[MatchResult]:
     center = validate_capture_center(capture_center)
     if center is not None and region is None:
         prior = _prior_region(
-            screenshot.shape, template, source_resolution, center
+            screenshot.shape,
+            template,
+            source_resolution,
+            center,
+            source_density,
+            current_density,
         )
         if prior is not None:
             results = _match_region(
-                screenshot, template, threshold, prior, source_resolution
+                screenshot,
+                template,
+                threshold,
+                prior,
+                source_resolution,
+                source_density,
+                current_density,
             )
             if results:
                 return results
             # 预测区域未命中:回退全区域,找不到就是找不到
-    return _match_region(screenshot, template, threshold, region, source_resolution)
+    return _match_region(
+        screenshot,
+        template,
+        threshold,
+        region,
+        source_resolution,
+        source_density,
+        current_density,
+    )
 
 
 def _match_region(
@@ -293,21 +337,25 @@ def _match_region(
     threshold: float,
     region: tuple[int, int, int, int] | None,
     source_resolution: tuple[int, int] | None,
+    source_density: int | None = None,
+    current_density: int | None = None,
 ) -> list[MatchResult]:
     rx, ry, rw, rh = _validate_region(region, (screenshot.shape[1], screenshot.shape[0]))
     search = screenshot[ry : ry + rh, rx : rx + rw]
 
-    if source_resolution is not None:
-        screen_size = (screenshot.shape[1], screenshot.shape[0])
-        if (int(source_resolution[0]), int(source_resolution[1])) != screen_size:
-            template = _adapt_scale(
-                cv2.cvtColor(search, cv2.COLOR_RGB2GRAY),
-                template,
-                screen_size,
-                source_resolution,
-            )
-            if template is None:
-                return []  # 所有尺度下模板都无法放进搜索区域
+    screen_size = (screenshot.shape[1], screenshot.shape[0])
+    expected_scale, span = _scale_plan(
+        screen_size, source_resolution, source_density, current_density
+    )
+    if expected_scale is not None:
+        template = _adapt_scale(
+            cv2.cvtColor(search, cv2.COLOR_RGB2GRAY),
+            template,
+            expected_scale=expected_scale,
+            span=span,
+        )
+        if template is None:
+            return []  # 所有尺度下模板都无法放进搜索区域
 
     th, tw = template.rgb.shape[:2]
     if th > rh or tw > rw:
@@ -357,20 +405,22 @@ def _prior_region(
     template: PreparedTemplate,
     source_resolution: tuple[int, int] | None,
     center: tuple[float, float],
+    source_density: int | None = None,
+    current_density: int | None = None,
 ) -> tuple[int, int, int, int] | None:
     """采集位置先验的预测搜索区域(P4b):预测中心 ± max(模板宽×尺度, 150px),
     裁剪进截图边界;裁剪后放不下模板则放弃先验,交给全区域路径处理。
 
-    尺度取期望比例 s0(与 P4a 同一换算):跨分辨率时模板在当前屏上的
-    显示宽度决定边距。返回 None 表示几何上无法构成有效预测区域。
+    尺度取期望比例 s0(分辨率换算是面积比,密度路径是 px/dp 比,
+    与匹配路径同一套换算):跨设备时模板在当前屏上的显示宽度决定边距。
+    返回 None 表示几何上无法构成有效预测区域。
     """
     height, width = shape[:2]
     tw, th = template.rgb.shape[1], template.rgb.shape[0]
-    s0 = 1.0
-    if source_resolution is not None:
-        source = (int(source_resolution[0]), int(source_resolution[1]))
-        if source != (width, height):
-            s0 = _expected_scale((width, height), source)
+    s0, _ = _scale_plan(
+        (width, height), source_resolution, source_density, current_density
+    )
+    s0 = 1.0 if s0 is None else s0
     margin = max(round(tw * s0), _PRIOR_MARGIN_MIN)
     pcx = width / 2 + center[0] * height
     pcy = height / 2 + center[1] * height
@@ -442,6 +492,55 @@ def _expected_scale(screen_size: tuple[int, int], source: tuple[int, int]) -> fl
     return math.sqrt((screen_size[0] * screen_size[1]) / (source[0] * source[1]))
 
 
+def _density_scale(
+    source_density: int | None, current_density: int | None
+) -> float | None:
+    """密度路径的期望尺度:cur_px_per_dp / src_px_per_dp(px_per_dp=density/160)。
+
+    两侧都必须存在且为正整数 dpi,相对差(分母为采集密度)超过
+    _DENSITY_RELATIVE_DIFF_MIN 才返回;否则 None 表示保持单尺度
+    (≤2% 视为测量噪声,行为与旧版本一致)。
+    """
+    if source_density is None or current_density is None:
+        return None
+    if (
+        isinstance(source_density, bool)
+        or isinstance(current_density, bool)
+        or not isinstance(source_density, int)
+        or not isinstance(current_density, int)
+        or source_density <= 0
+        or current_density <= 0
+    ):
+        return None
+    if abs(current_density - source_density) / source_density <= _DENSITY_RELATIVE_DIFF_MIN:
+        return None
+    return (current_density / 160) / (source_density / 160)
+
+
+def _scale_plan(
+    screen_size: tuple[int, int],
+    source_resolution: tuple[int, int] | None,
+    source_density: int | None,
+    current_density: int | None,
+) -> tuple[float | None, float]:
+    """返回 (期望尺度, 搜索 span);None 表示保持单尺度(旧行为)。
+
+    优先级与触发规则(工单 02):
+    1. 采集分辨率与当前截图不同 → 面积比路径(与 P4a 完全一致,忽略密度);
+    2. 分辨率相同(或未提供采集分辨率)→ 两侧密度均存在且相对差 >2%
+       才走密度路径;
+    3. 其余(同密度、缺密度、旧模板)→ 单尺度。
+    """
+    if source_resolution is not None:
+        source = (int(source_resolution[0]), int(source_resolution[1]))
+        if source != screen_size:
+            return _expected_scale(screen_size, source), _SCALE_SPAN
+    density_scale = _density_scale(source_density, current_density)
+    if density_scale is not None:
+        return density_scale, _SCALE_SPAN  # span 待探针校准,见模块 docstring
+    return None, _SCALE_SPAN
+
+
 def _scan_scales(
     search_gray: np.ndarray,
     template_gray: np.ndarray,
@@ -479,19 +578,22 @@ def _scan_scales(
 def _adapt_scale(
     search_gray: np.ndarray,
     template: PreparedTemplate,
-    screen_size: tuple[int, int],
-    source_resolution: tuple[int, int],
+    *,
+    expected_scale: float,
+    span: float = _SCALE_SPAN,
 ) -> PreparedTemplate | None:
-    """有界多尺度(P4a):粗扫+细扫估计最优尺度,返回按该尺度缩放的新模板。
+    """有界多尺度:在 expected_scale ± span 内粗扫+细扫,返回该尺度下的新模板。
 
-    粗细扫都在长边 ≤ _SCALE_SEARCH_LONG_EDGE 的降采样搜索图上进行
-    (借鉴 Airtest mstpl 的 src_max 降本):扫描前把全分辨率尺度乘上
-    降采样系数,扫描结果再除回,保持尺度体系一致。无可用尺度(模板
-    缩放后过小或放不进搜索区域)返回 None,语义为无匹配。期望比例
-    s0 下模板大于搜索区域属使用错误,返回原尺寸模板,交给尺寸校验拒绝。
+    分辨率路径与密度路径共用:expected_scale 由 _scale_plan 给出(面积比
+    或 px/dp 比),span 由调用方传入(密度路径的实际抖动待真机探针校准,
+    当前沿用 _SCALE_SPAN)。粗细扫都在长边 ≤ _SCALE_SEARCH_LONG_EDGE 的
+    降采样搜索图上进行(借鉴 Airtest mstpl 的 src_max 降本):扫描前把全
+    分辨率尺度乘上降采样系数,扫描结果再除回,保持尺度体系一致。无可用
+    尺度(模板缩放后过小或放不进搜索区域)返回 None,语义为无匹配。期望
+    比例下模板大于搜索区域属使用错误,返回原尺寸模板,交给尺寸校验拒绝。
     """
-    s0 = _expected_scale(screen_size, source_resolution)
-    lo, hi = s0 / _SCALE_SPAN, s0 * _SCALE_SPAN
+    s0 = expected_scale
+    lo, hi = s0 / span, s0 * span
     th, tw = template.rgb.shape[:2]
     search_w, search_h = search_gray.shape[1], search_gray.shape[0]
     if round(tw * s0) > search_w or round(th * s0) > search_h:

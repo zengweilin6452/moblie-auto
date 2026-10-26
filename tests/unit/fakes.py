@@ -52,8 +52,11 @@ class FakeBackend:
         screenshots=None,
         ui_xml="",
         element_filter=None,
+        density=420,
     ):
         self.screen = screen
+        self.density = density  # 工单 02:默认 420 dpi,可按用例覆盖
+        self.density_calls = 0
         self.elements = elements or {}  # (Locator 值, value) -> [FakeElement]
         self.find_script = list(find_script or [])  # 每次查询依次弹出,耗尽后回落 elements
         self.screenshots = list(screenshots or [])
@@ -79,6 +82,10 @@ class FakeBackend:
 
     def screen_size(self):
         return self.screen
+
+    def screen_density(self):
+        self.density_calls += 1
+        return self.density
 
     def find_elements(self, by, value):
         self.find_calls += 1
