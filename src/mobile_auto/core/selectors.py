@@ -3,7 +3,8 @@
 规则:五种原生定位方式的精确匹配由底层选择器保证(u2 选择器在本模块
 做 JSON 白名单校验);可见性为有效非空 bounds 且与屏幕相交;无 index
 判断存在性或枚举全部,单目标操作要求唯一;index 拒绝 bool、负数与
-字符串数字(Target 构造时校验)。
+字符串数字(Target 构造时校验)。index 为树遍历序(uiautomator 层级
+顺序),不是视觉位置序。
 """
 
 from __future__ import annotations

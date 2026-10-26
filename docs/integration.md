@@ -32,6 +32,9 @@ OpenCV 共存验证步骤。GLOSSARY"参考契约/绑定层"为术语依据。
 `ElementHandle`(click/get_text/input_text/get_attribute + 重校验)、
 `MobileConfig`、13 类错误(`mobile_auto.errors`)。
 
+`Target.index` 是**树遍历序**(uiautomator 层级顺序),不是视觉位置序;
+列表顺序与阅读顺序不一致时以层级顺序为准(实现见 `core/selectors.py`)。
+
 **契约外平台扩展面(2026-10-25,绑定层不映射)**:`adapter.device.*`
 提供坐标手势原语 `tap(x, y)` / `swipe(x0, y0, x1, y1, duration_s)` /
 `long_press(x, y, hold_s)`,可选 `source="auto"|"scrcpy"|"u2"` 钉死注入
@@ -115,6 +118,7 @@ pytest tests/contract -q          # 本地参考契约核对
 | 2026-10-24 | 15 方法 + platform;13 类错误;六种 Locator;语义以 plan 5.2/5.3 为准 | 工单 01–11 交付 |
 | 2026-10-25 | `goto` 新增可选 `package`/`activity` 显式覆盖(缺省沿用配置,行为向后兼容);`activity` 必须与 `package` 同时给出 | 同一会话切换被启动 App 的需要 |
 | 2026-10-25 | 新增可选配置 `dialog_guard`(契约外行为,默认关闭):预算耗尽时按白名单清理一次系统弹窗,命中才重试一次 | MIUI 权限弹窗随机挡住锚点等待(见 §10) |
+| 2026-10-26 | 契约外新增 `wait_gone`/`click_until_gone`(15 方法签名与语义不变;绑定层按需转发,见 §12) | 工单 05:消失等待原语 |
 
 内网接入完成后追加:真实 Port 枚举值 ↔ 本地 Locator 映射表、行为差异
 (如 marker 默认值)、绑定层版本号。
@@ -227,6 +231,46 @@ value = '{"packageName":"com.lbe.security.miui","text":"拒绝"}'
   `warning`/`info`,不自建 handler,观测失败不得影响操作结果。
 
 回滚:删除装饰器与 `evidence/journal.py` 即可,无数据迁移。
+
+## 12. 契约外便捷方法(建议绑定层转发,2026-10-26)
+
+以下方法**不在 15 方法契约内**(签名与语义均未改动),但属适配器公共面。
+内网要在线用例里用上,绑定层必须显式加转发(每个方法一行委托);不加转发
+则内网 Port 上根本看不到这些方法,契约核对也不受影响。
+
+| 方法 | 签名 | 语义 |
+| :--- | :--- | :--- |
+| `adapter.device.tap` | `(x, y, *, source="auto")` | 坐标点击;返回实际注入通道 |
+| `adapter.device.swipe` | `(x0, y0, x1, y1, duration_s=0.3, *, source="auto")` | 坐标滑动;返回通道 |
+| `adapter.device.long_press` | `(x, y, hold_s=0.8, *, source="auto")` | 坐标长按;返回通道 |
+| `adapter.wait_gone` | `(target, timeout=None) -> bool` | 轮询到目标**不可见**即 True;预算耗尽 False |
+| `adapter.click_until_gone` | `(target, timeout=None, interval=0.5) -> bool` | 反复点击到目标消失;预算耗尽 False |
+
+```python
+# 绑定层转发示例(内网仓库;不改 15 方法契约)
+async def wait_gone(self, target, timeout=None):
+    return await self._adapter.wait_gone(target, timeout=timeout)
+
+async def click_until_gone(self, target, timeout=None, interval=0.5):
+    return await self._adapter.click_until_gone(
+        target, timeout=timeout, interval=interval
+    )
+```
+
+- `wait_gone` 与 `wait_for` 对称:默认 `wait_timeout`、按 `poll_interval`
+  轮询,`timeout=0` 只查询一次,负数/非有限值报 `ValueError`,设备错误原样
+  抛出;预算耗尽时动作流水记 `outcome="not_found"`。不触发弹窗守卫。
+- `click_until_gone` **仅用于点击后自身消失的控件**(弹窗关闭、提示确认)。
+  点击会跳转页面时目标不再出现,会连点到预算耗尽。原生目标每轮一个队列
+  任务(查找→唯一定位→取消检查点→点击),`AmbiguousTarget` 直接抛不猜;
+  IMAGE 目标每轮一次完整点击事务,不做"先查询再事务"的双重采集。轮间
+  `sleep(min(interval, 剩余预算))`,`interval` 必须为有限正数;预算耗尽
+  同样在动作流水记 `outcome="not_found"`。
+- **决策**:不提供 `raise_on_timeout` 开关;需要断言消失就写
+  `assert await adapter.wait_gone(...)`——`False` 已是明确返回值,再加开关
+  只会分裂两条失败语义。
+- `tests/contract/test_contract.py` 的"契约面封闭"断言显式白名单了这两个
+  方法(`EXTRA_PUBLIC_METHODS`);新增同类方法须同步更新白名单与本节。
 
 ## 并行执行与 CI 投屏接入(P2,2026-10-25)
 
