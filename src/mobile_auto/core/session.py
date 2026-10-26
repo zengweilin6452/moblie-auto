@@ -568,9 +568,11 @@ class DeviceSession:
         resolved = source if source != "auto" else self._config.injection_source
         if resolved == "u2":
             self._record_u2_basis(backend)
+            self.send_checkpoint()  # 首写前最后取消检查(与契约注入同语义)
             u2_gesture()
             return self._note_injection_channel("u2")
         if resolved == "auto" and self._scrcpy_degraded_until > time.monotonic():
+            self.send_checkpoint()
             u2_gesture()
             return self._note_injection_channel("u2")
         try:
@@ -582,12 +584,14 @@ class DeviceSession:
             u2_gesture()
             return self._note_injection_channel("u2")
         self.ensure_coordinate_basis(backend, channel)
+        self.send_checkpoint()  # 首写(DOWN)前最后取消检查
         try:
             scrcpy_gesture(channel)
         except _CleanFallback as failure:
             self._note_channel_failure()
             if resolved == "scrcpy":
                 raise failure.original from None
+            self.send_checkpoint()  # DOWN 未发出,回退 u2 前再检查一次
             u2_gesture()  # DOWN 未发出:整体回退
             return self._note_injection_channel("u2")
         except Exception:
@@ -626,6 +630,7 @@ class DeviceSession:
         from .device_ops import press_gesture
 
         if name not in ("back", "home"):
+            self.send_checkpoint()  # 直接 u2 按键同样在发送前检查取消
             backend.press_key(name)
             return
         self.inject_gesture(

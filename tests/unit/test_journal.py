@@ -168,6 +168,35 @@ async def test_cancel_during_send_records_unknown(tmp_path):
     assert line["outcome"] == "unknown"
 
 
+class _BlockingTapBackend(FakeBackend):
+    """u2 点击已发出后阻塞;手势路径也应能判定"已进入发送阶段"。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def tap(self, x, y):
+        self.entered.set()
+        self.release.wait(5)
+        super().tap(x, y)
+
+
+async def test_device_tap_cancel_during_send_records_unknown(tmp_path):
+    backend = _BlockingTapBackend()
+    adapter, _ = make_adapter(config(tmp_path), backend=backend)
+    attach(adapter, tmp_path)
+    task = asyncio.create_task(adapter.device.tap(10, 20, source="u2"))
+    assert await asyncio.to_thread(backend.entered.wait, 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    backend.release.set()
+    [line] = lines(tmp_path)
+    assert line["op"] == "device.tap"
+    assert line["outcome"] == "unknown"
+
+
 async def test_input_text_records_length_not_text(tmp_path):
     box = FakeElement(
         (0, 0, 100, 40),
