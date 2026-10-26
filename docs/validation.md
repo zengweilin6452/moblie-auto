@@ -339,6 +339,22 @@ spec:.scratch/scrcpy-upstream/(协议对照 v5.0.1 源码逐项核实);提交 63
 - 默认 stream_backend 已翻转为 upstream;wetest 保留为回退(显式 stream_backend="wetest")。
 - 遗留(2026-10-25 更新):capture_png 分辨率语义已随 PRD §8.5 修订(upstream=流分辨率,全分辨率取证走 u2);wetest 通道删除工单仍待内网设备矩阵验证。
 
+## 动作流水(工单 01,2026-10-26)
+
+- **单元/契约验证**:`tests/unit/test_journal.py` 覆盖字段与脱敏、`ok`/
+  `not_found`/`error`/`unknown` 结局、发送前/发送中取消区分、嵌套公共调用
+  只写一行、写失败禁用、32 MiB 截断、无 journal 时零文件,以及
+  `meta.journal_summary` 消费。
+- **真机验证:待补**。本次实现环境无可用设备,未录 Beta_Academy 真机流水;
+  接入后按工单 01 测试节补录:
+  1. 带 `--mobile-evidence` 跑固定公共调用序列(`goto`/`is_visible`/`click`/
+     `scroll`/`device.tap`/`back`),`<artifacts>/actions.jsonl` 行数 = 序列
+     公共调用次数(xdist 下在 `xdist-<worker>/actions.jsonl`);`wait_for`
+     轮询全程只一行。
+  2. 不带 `--mobile-evidence` 时产物目录不产生 `actions.jsonl`。
+  3. viewer 侧 `<artifacts>/viewer/<serial>/actions.jsonl` 行数 = 注入请求
+     次数,tap/swipe 行含实际 `channel` 与 `coordinate_basis`。
+
 ## 坐标基准保鲜(工单 04,2026-10-26)
 
 注入坐标必须与设备当前显示基准一致;此前 `Channel.refresh_screen_size` 在 `src/`
@@ -361,11 +377,14 @@ spec:.scratch/scrcpy-upstream/(协议对照 v5.0.1 源码逐项核实);提交 63
   refreshable=false, consistent=false`,不调用空实现、不改道、不重放注入。
   若真机出现 upstream 旋转后基准迟迟不更新,再评估 `dumpsys display` / 显示区偏移
   (spec 前提崩塌 4),当前不做。
-- **source 语义**:`auto` 实际走 u2(含降级窗口)与显式 `source="u2"` 不经通道,
-  没有通道基准,不校验;显式 `source="scrcpy"` 校验但**不改道**。
+- **source 语义**:`auto` 实际走 u2(含降级窗口)与显式 `source="u2"` 都不改道
+  注入通道。降级窗口内直接走 u2 的路径不探测通道(降级原因即通道不可用);
+  显式 `u2` 若已有可用通道,同样做尺寸一致性校验并记录基准,没有可用通道时
+  **不为校验而启动通道**,如实记 `channel=null`/`refreshable=false`/
+  `consistent=false` + `reason`。显式 `source="scrcpy"` 校验但**不改道**。
 - **观测**:journal 注入行 `coordinate_basis = {channel, backend, refreshed,
-  refreshable, consistent, checked_at[, refresh_error]}`;失败证据
-  `meta.device.coordinate_spaces` 为同一快照(无通道注入记录时为 `null`)。
+  refreshable, consistent, checked_at[, refresh_error][, reason]}`;失败证据
+  `meta.device.coordinate_spaces` 为同一快照(无基准可记时为 `null`)。
 - **已知口径**:`ScrcpyChannel._resolve_screen` 只取 `wm size` 第一个 `WxH`,不处理
   `Override size:` 行,与工单 02 的 density 口径(先 Override)不同;`wm size 1080x2400`
   测试残留会造成一次合法不一致,校验只刷新一次,不循环。

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -73,7 +74,7 @@ async def test_line_has_required_fields_and_only_target_keys(tmp_path):
     assert "channel" not in line  # 读取类不臆造通道
 
 
-async def test_outcome_ok_not_found_error_and_unknown(tmp_path):
+async def test_outcome_ok_not_found_error_and_cancelled_before_send(tmp_path):
     adapter, _ = make_adapter(config(tmp_path), backend=visible_backend())
     attach(adapter, tmp_path)
     assert await adapter.wait_for(found_target(), timeout=0.05) is True
@@ -98,7 +99,73 @@ async def test_outcome_ok_not_found_error_and_unknown(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await task
     [cancelled] = lines(tmp_path / "cancel")
-    assert cancelled["outcome"] == "unknown"
+    # 轮询间隙取消:未进入发送阶段,属于明确失败而非结果未知
+    assert cancelled["outcome"] == "error"
+    assert cancelled["error_type"] == "CancelledError"
+
+
+class _BlockingFindBackend(FakeBackend):
+    """查找阻塞在发送检查点之前,用于确定"取消未进入发送阶段"。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def find_elements(self, by, value):
+        self.entered.set()
+        self.release.wait(5)
+        return []
+
+
+class _BlockingClickElement(FakeElement):
+    """点击已过检查点后阻塞,用于确定"取消已进入发送阶段"。"""
+
+    def __init__(self, bounds):
+        super().__init__(bounds)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def click(self) -> None:
+        self.entered.set()
+        self.release.wait(5)
+        super().click()
+
+
+async def test_cancel_before_send_records_error_with_cancelled_type(tmp_path):
+    backend = _BlockingFindBackend()
+    adapter, _ = make_adapter(
+        config(tmp_path, wait_timeout=5.0, poll_interval=0.05), backend=backend
+    )
+    attach(adapter, tmp_path)
+    task = asyncio.create_task(adapter.click(Target(Locator.TEXT, "永恒")))
+    assert await asyncio.to_thread(backend.entered.wait, 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    backend.release.set()
+    [line] = lines(tmp_path)
+    assert line["op"] == "click"
+    assert line["outcome"] == "error"
+    assert line["error_type"] == "CancelledError"
+
+
+async def test_cancel_during_send_records_unknown(tmp_path):
+    element = _BlockingClickElement((0, 0, 9, 9))
+    adapter, _ = make_adapter(
+        config(tmp_path),
+        backend=FakeBackend(elements={("text", "在"): [element]}),
+    )
+    attach(adapter, tmp_path)
+    task = asyncio.create_task(adapter.click(found_target()))
+    assert await asyncio.to_thread(element.entered.wait, 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    element.release.set()
+    [line] = lines(tmp_path)
+    assert line["op"] == "click"
+    assert line["outcome"] == "unknown"
 
 
 async def test_input_text_records_length_not_text(tmp_path):
@@ -201,6 +268,30 @@ def test_write_failure_never_changes_result(tmp_path):
     journal = Journal(blocked, "abcd1234")
     journal.record("click", duration_ms=1.0, outcome="ok")  # 不抛错
     assert journal.summary() is None
+
+
+def test_write_failure_disables_journal_instead_of_retrying(tmp_path, caplog):
+    """写失败一次即禁用:不再重试,告警与行为一致(directory-unwritable 同款)。"""
+
+    class BrokenHandle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def fileno(self):
+            self.calls += 1
+            raise OSError("disk full")
+
+        def close(self):
+            pass
+
+    journal = Journal(tmp_path, "abcd1234")
+    handle = BrokenHandle()
+    journal._handle = handle
+    journal.record("click", duration_ms=1.0, outcome="ok")
+    journal.record("click", duration_ms=1.0, outcome="ok")
+    assert handle.calls == 1  # 第二次不再触碰坏句柄
+    assert journal._disabled is True
+    assert "已禁用" in caplog.text
 
 
 async def test_write_failure_keeps_adapter_working(tmp_path):

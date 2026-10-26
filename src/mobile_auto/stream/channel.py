@@ -95,6 +95,8 @@ def _staged_for_push(path: Path) -> Path:
 class ScrcpyChannel:
     """单台设备的 scrcpy 视频流与控制通道;方法同步,跨线程经设备队列串行调用。"""
 
+    # 实际通道标识:动作流水据此记录,由通道实例声明而非调用方臆造
+    channel_name = "scrcpy"
     # 坐标基准可重探(refresh_screen_size 会重新执行 wm size + rotation)
     can_refresh_screen_size = True
 

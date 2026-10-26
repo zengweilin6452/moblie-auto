@@ -1095,6 +1095,7 @@ def create_app(
         journal = session.journal
         started = time.monotonic()
         used_basis: list[dict] = []
+        session.begin_operation()  # 清空上一步的通道/基准快照,避免误记
         try:
             with _LeaseGuard(session) as guard:
                 channel = manager.get()
@@ -1105,6 +1106,10 @@ def create_app(
                     try:
                         return operation(channel, backend)
                     finally:
+                        # 实际通道由通道实例声明;读不到就不记,不臆造
+                        name = getattr(channel, "channel_name", None)
+                        if isinstance(name, str) and name:
+                            session._note_injection_channel(name)
                         if basis:
                             current = session.last_coordinate_basis
                             if current is not None:
@@ -1135,6 +1140,9 @@ def create_app(
         else:
             if journal is not None:
                 ok_extra = dict(extra or {})
+                actual_channel = session.last_injection_channel
+                if actual_channel:
+                    ok_extra["channel"] = actual_channel
                 if used_basis:
                     ok_extra["coordinate_basis"] = used_basis[-1]
                 journal.record(
@@ -1169,7 +1177,7 @@ def create_app(
                     )(_fresh_channel_size(session, backend, channel))
                 ),
                 op="viewer.tap",
-                extra={"point": [nx, ny], "normalized": True, "channel": "scrcpy"},
+                extra={"point": [nx, ny], "normalized": True},
                 basis=True,
             )
         except MobileAutoError as exc:
@@ -1215,7 +1223,6 @@ def create_app(
                     "from": [nx0, ny0],
                     "to": [nx1, ny1],
                     "normalized": True,
-                    "channel": "scrcpy",
                 },
                 basis=True,
             )
@@ -1239,7 +1246,7 @@ def create_app(
                 manager,
                 lambda channel, _backend: channel.press_key(name),
                 op="viewer.press_key",
-                extra={"key": name, "channel": "scrcpy"},
+                extra={"key": name},
             )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)

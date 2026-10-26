@@ -120,7 +120,11 @@ class Journal:
                 handle.flush()
             except OSError as exc:
                 self._close_locked()
-                self._warn("动作流水写入失败(%s),已停止记录", type(exc).__name__)
+                # 写失败与目录不可写同款处置:一次告警后彻底禁用,不再重试
+                self._disabled = True
+                self._warn(
+                    "动作流水写入失败(%s),已禁用记录", type(exc).__name__
+                )
 
     def summary(self) -> dict | None:
         """读取本文件的步数/总耗时/首个失败步;文件不存在返回 None。"""
@@ -238,16 +242,29 @@ def journaled(op: str):
             @functools.wraps(function)
             async def async_wrapper(self, *args, **kwargs):
                 session = _session_of(self)
-                journal = getattr(session, "journal", None) if session is not None else None
-                if journal is None or _ACTIVE.get():
+                # 未挂 journal 也要清空快照:坐标基准@通道不得跨公共调用残留
+                if session is None or _ACTIVE.get():
                     return await function(self, *args, **kwargs)
                 session.begin_operation()
+                journal = getattr(session, "journal", None)
+                if journal is None:
+                    return await function(self, *args, **kwargs)
                 token = _ACTIVE.set(True)
                 started = time.monotonic()
                 try:
                     result = await function(self, *args, **kwargs)
                 except asyncio.CancelledError:
-                    _record(journal, session, op, args, kwargs, started, "unknown")
+                    outcome, error_type = _cancellation_outcome(session)
+                    _record(
+                        journal,
+                        session,
+                        op,
+                        args,
+                        kwargs,
+                        started,
+                        outcome,
+                        error_type=error_type,
+                    )
                     raise
                 except Exception as exc:
                     _record(
@@ -277,10 +294,12 @@ def journaled(op: str):
         @functools.wraps(function)
         def sync_wrapper(self, *args, **kwargs):
             session = _session_of(self)
-            journal = getattr(session, "journal", None) if session is not None else None
-            if journal is None or _ACTIVE.get():
+            if session is None or _ACTIVE.get():
                 return function(self, *args, **kwargs)
             session.begin_operation()
+            journal = getattr(session, "journal", None)
+            if journal is None:
+                return function(self, *args, **kwargs)
             token = _ACTIVE.set(True)
             started = time.monotonic()
             try:
@@ -318,6 +337,17 @@ def _session_of(obj: Any):
         return session
     adapter = getattr(obj, "_adapter", None)
     return getattr(adapter, "_session", None)
+
+
+def _cancellation_outcome(session: Any) -> tuple[str, str | None]:
+    """取消只记 unknown 当且仅当已进入发送阶段(工单 01/plan 7.1)。
+
+    发送阶段由 session.mark_cancelled 根据操作状态登记;读不到(轮询间隙、
+    未经过设备队列)时不存在未知的在途发送,按明确失败记录。
+    """
+    if getattr(session, "last_cancel_after_send", None):
+        return "unknown", None
+    return "error", "CancelledError"
 
 
 def _record(

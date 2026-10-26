@@ -11,7 +11,7 @@ from conftest import NullLease
 from fakes import FakeBackend, make_session
 from fastapi.testclient import TestClient
 
-from mobile_auto import DeviceSession, MobileAdapter, MobileConfig
+from mobile_auto import DeviceSession, Locator, MobileAdapter, MobileConfig, Target
 from mobile_auto.evidence.collector import collect_failure_evidence
 from mobile_auto.evidence.journal import Journal
 from mobile_auto.viewer.app import _ChannelManager, create_app
@@ -165,12 +165,46 @@ async def test_explicit_scrcpy_checks_but_never_reroutes():
     assert backend.taps == []  # 不改道 u2
 
 
-async def test_source_u2_skips_basis_probe():
-    adapter, _, channel, backend = make_env()
+async def test_source_u2_does_not_start_channel_and_records_absent_basis():
+    adapter, session, channel, backend = make_env()
     assert await adapter.device.tap(1, 2, source="u2") == "u2"
-    assert backend.screen_calls == 0
+    assert channel.started is False  # 不为校验而启动通道
     assert channel.refresh_calls == 0
     assert backend.taps == [(1, 2)]
+    basis = session.last_coordinate_basis
+    assert basis["channel"] is None
+    assert basis["refreshable"] is False
+    assert basis["consistent"] is False
+    assert basis["reason"]
+
+
+async def test_source_u2_checks_existing_channel_without_rerouting(tmp_path):
+    adapter, session, channel, backend = make_env(artifacts_dir=tmp_path)
+    session.set_journal(Journal(tmp_path, session.session_id))
+    assert await adapter.device.tap(10, 20, source="scrcpy") == "scrcpy"
+    assert len(channel.events) == 2
+    time.sleep(1.05)  # 越过基准校验节流
+    backend.screen = (2400, 1080)  # 设备旋转:已存在通道的基准需保鲜
+
+    assert await adapter.device.tap(1200, 540, source="u2") == "u2"
+    assert channel.refresh_calls == 1  # 已有通道同样做一致性校验
+    assert len(channel.events) == 2  # 未改道 scrcpy
+    assert backend.taps == [(1200, 540)]
+    _, u2_line = journal_lines(tmp_path / "actions.jsonl")
+    basis = u2_line["coordinate_basis"]
+    assert basis["channel"] == [2400, 1080]
+    assert basis["backend"] == [2400, 1080]
+    assert basis["refreshed"] is True
+    session.journal.close()
+
+
+async def test_unattached_journal_still_clears_basis_between_operations():
+    """未挂 journal 时也须 begin_operation:上一操作的基准不得残留到下一操作。"""
+    adapter, session, _, _ = make_env()
+    await adapter.device.tap(10, 20)
+    assert session.last_coordinate_basis is not None
+    assert await adapter.is_visible(Target(Locator.TEXT, "不在")) is False
+    assert session.last_coordinate_basis is None
 
 
 async def test_non_refreshable_scaled_basis_is_treated_as_same_display():
@@ -220,12 +254,16 @@ async def test_journal_injection_row_carries_coordinate_basis(tmp_path):
     session.journal.close()
 
 
-async def test_u2_injection_row_has_no_coordinate_basis(tmp_path):
+async def test_u2_injection_row_records_unavailable_channel_basis(tmp_path):
     adapter, session, _, _ = make_env(artifacts_dir=tmp_path)
     session.set_journal(Journal(tmp_path, session.session_id))
     await adapter.device.tap(10, 20, source="u2")
     [line] = journal_lines(tmp_path / "actions.jsonl")
-    assert "coordinate_basis" not in line
+    basis = line["coordinate_basis"]
+    assert basis["channel"] is None
+    assert basis["refreshable"] is False
+    assert basis["consistent"] is False
+    assert basis["reason"]
     session.journal.close()
 
 

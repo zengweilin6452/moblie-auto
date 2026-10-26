@@ -201,10 +201,22 @@ def test_viewer_injection_writes_action_journal(control_env, tmp_path):
     [line] = lines()
     assert line["op"] == "viewer.tap"
     assert line["outcome"] == "ok"
-    assert line["channel"] == "scrcpy"
+    # 伪造通道未声明实际通道名:不臆造 channel,更不写死 scrcpy
+    assert "channel" not in line
     assert line["point"] == [0.5, 0.5]
     assert line["normalized"] is True
     assert line["session"] == session.session_id
+    journal.close()
+
+
+def test_viewer_journal_records_real_upstream_channel(control_env, tmp_path):
+    http, session, channel, _ = control_env
+    channel.channel_name = "upstream"
+    journal, lines = _viewer_journal(tmp_path, session)
+    http.post("/api/v1/control", json={"enabled": True})
+    assert http.post("/api/v1/input/touch", json={"nx": 0.5, "ny": 0.5}).status_code == 200
+    [line] = lines()
+    assert line["channel"] == "upstream"  # 实际通道,不是写死的 scrcpy
     journal.close()
 
 

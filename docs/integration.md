@@ -112,10 +112,17 @@ pytest tests/contract -q          # 本地参考契约核对
 | SessionFaulted | 会话故障/关闭后 | 会话故障类 |
 
 **坐标基准(契约外观测,2026-10-26)**:失败证据 `meta.device.coordinate_spaces`
-记录最近一次通道注入前的通道/后端两组尺寸与刷新结果
-(`{channel, backend, refreshed, refreshable, consistent, checked_at}`),未发生通道
-注入时为 `null`;不属于错误类型,绑定层无需映射,原样透传即可。注入前基准校验与
-刷新由本包内部完成(节流 1s,见 `docs/validation.md`),契约方法签名不变。
+记录最近一次注入前的通道/后端两组尺寸与刷新结果。键集以实际实现为准:
+
+- 必有:`channel`、`backend`、`refreshed`、`refreshable`、`consistent`、
+  `checked_at`(UTC 毫秒);
+- 可选:`refresh_error`(刷新失败时的异常类名)、`reason`(显式 u2 且无可用
+  视频通道时,说明为何未校验)。
+
+`channel` 为通道缓存尺寸,无法判定时为 `null`(如显式 `u2` 且未启动视频通道)。
+未发生注入(或确无基准可记)时 `coordinate_spaces` 为 `null`;不属于错误类型,
+绑定层无需映射,原样透传即可。注入前基准校验与刷新由本包内部完成(节流 1s,
+见 `docs/validation.md`),契约方法签名不变。
 
 ## 5. 契约版本记录
 
@@ -218,13 +225,29 @@ value = '{"packageName":"com.lbe.security.miui","text":"拒绝"}'
 - **落盘**:pytest 侧跟随 `--mobile-evidence`,与失败证据同源——
   `<artifacts>/xdist-<worker>/actions.jsonl`,非 xdist 为
   `<artifacts>/actions.jsonl`;viewer 侧始终写
-  `<artifacts>/viewer/<serial>/actions.jsonl`(按设备分层)。目录不可写时
-  自动禁用并一次性告警,不改变操作结果。单文件上限 32 MiB,超限追加
-  `{"op":"journal","outcome":"truncated"}` 后停止写入。
+  `<artifacts>/viewer/<serial>/actions.jsonl`(按设备分层)。viewer 的 serial
+  目录名做清洗:只保留 `[0-9A-Za-z._-]`,其余字符替换为 `_`(含 `:` 的 TCP
+  serial 不能直接做目录名,如 `192.168.1.5:5555` → `192.168.1.5_5555`)。
+  目录不可写或写入失败时自动禁用并一次性告警,不改变操作结果。单文件上限
+  32 MiB,超限追加 `{"op":"journal","outcome":"truncated"}` 后停止写入。
 - **字段**:`ts`(UTC 毫秒)/`session`(会话 8 位随机 id)/`op`/
-  `duration_ms`/`outcome`(`ok`/`not_found`/`error`/`unknown`)/
-  `error_type`(异常类名,不含消息)/`channel`(仅注入类操作,取实际通道)/
-  `target`(只含 `by`/`value`/`index`/`confidence`/`region`)。
+  `duration_ms`/`outcome`(`ok`/`not_found`/`error`/`unknown`;`unknown` 仅用于
+  **已进入发送阶段**的取消——发送前取消记 `error` + `error_type="CancelledError"`)/
+  `error_type`(异常类名,不含消息)/`channel`(仅注入类操作,取注入后实际使用的
+  通道;读不到则省略,不写死)/`target`(只含 `by`/`value`/`index`/`confidence`/
+  `region`)/`coordinate_basis`(注入前基准,见 §4)。
+- **操作与专属字段**:
+  - 契约方法:`wait_for`/`wait_gone`/`click_until_gone` 预算耗尽成功返回
+    `False` 时记 `outcome="not_found"`;
+  - `adapter.device`: `device.tap`/`device.long_press` 记 `point` + `normalized`,
+    `device.swipe` 记 `from`/`to` + `normalized`(坐标面均为设备像素,
+    `normalized=false`);
+  - viewer 注入:`viewer.tap`(`point`/`normalized`)、`viewer.swipe`
+    (`from`/`to`/`normalized`)、`viewer.press_key`(`key`)、`viewer.wake`
+    (无专属字段),均写 `coordinate_basis`(tap/swipe)与实际 `channel`。
+- **不记 `channel` 的注入路径**:原生 `click`/`press_key` 等契约方法经 u2 后端
+  直连(不经 `inject_gesture`),没有可观测的通道切换;这些行不带 `channel`
+  字段——这是既定取舍:链路确实没经过视频通道时,不臆造 "u2"。
 - **脱敏**:`input_text` 只记 `text_length`,不记原文;`get_text` 不记返回值;
   `goto` 只记 `scheme` 或 `"cold_start"`;读取类不带 `channel`。
 - **消费者**:失败证据 `meta.json` 的 `journal_summary`(步数/总耗时/首个失败步);

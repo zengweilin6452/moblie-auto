@@ -509,14 +509,7 @@ class MobileAdapter:
         设备错误(查询抛错)原样传播,不折算为 False(plan 5.2)。
         任务取消在轮询间隙生效:取消后不再发起新一轮查询。
         """
-        budget = self._session.config.wait_timeout if timeout is None else timeout
-        if (
-            isinstance(budget, bool)
-            or not isinstance(budget, (int, float))
-            or not math.isfinite(budget)
-            or budget < 0
-        ):
-            raise ValueError(f"timeout 必须是有限的非负数值,得到 {timeout!r}")
+        budget = _budget(timeout, self._session.config.wait_timeout)
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + budget

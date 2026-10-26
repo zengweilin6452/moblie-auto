@@ -70,6 +70,8 @@ def upstream_asset() -> Path:
 class UpstreamChannel:
     """单台设备的上游 scrcpy 通道;方法同步,跨线程经设备队列串行调用。"""
 
+    # 实际通道标识:动作流水据此记录,由通道实例声明而非调用方臆造
+    channel_name = "upstream"
     # 坐标基准来自视频会话元包(可能被 max_size 缩放),无强制重探能力:
     # refresh_screen_size 仅为接口同形而保留,不能修复基准(工单 04)
     can_refresh_screen_size = False

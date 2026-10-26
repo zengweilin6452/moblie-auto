@@ -210,6 +210,7 @@ class DeviceSession:
         self._injection_lock = threading.Lock()
         self._last_injection_channel: str | None = None
         self._last_coordinate_basis: dict | None = None
+        self._last_cancel_after_send: bool | None = None
         self._journal = None
         # 坐标基准保鲜(工单 04):缓存按通道对象失效,仅在设备队列线程读写
         self._basis_channel = None
@@ -292,10 +293,17 @@ class DeviceSession:
         self._journal = journal
 
     def begin_operation(self) -> None:
-        """公共操作开始:清空上一次的注入通道与坐标基准快照。"""
+        """公共操作开始:清空上一次的注入通道、坐标基准与取消阶段快照。"""
         with self._injection_lock:
             self._last_injection_channel = None
             self._last_coordinate_basis = None
+            self._last_cancel_after_send = None
+
+    @property
+    def last_cancel_after_send(self) -> bool | None:
+        """最近一次等待方取消是否发生在发送阶段;未登记取消为 None。"""
+        with self._injection_lock:
+            return self._last_cancel_after_send
 
     @property
     def last_injection_channel(self) -> str | None:
@@ -510,6 +518,30 @@ class DeviceSession:
             return None
         return supervisor.peek_healthy()
 
+    def _record_u2_basis(self, backend) -> None:
+        """显式 u2 注入的坐标基准观测(工单 04 §04a)。
+
+        通道已存在时与 scrcpy 路径同样校验尺寸并记录基准;没有可用通道时
+        **不为校验而启动通道**,如实记 ``channel=null``/``refreshable=false``/
+        ``consistent=false`` 与原因。注入通道本身绝不因此改道。
+        """
+        channel = self.healthy_channel()
+        if channel is not None:
+            self.ensure_coordinate_basis(backend, channel)
+            return
+        backend_size = _safe_screen_size(backend)
+        self._note_coordinate_basis(
+            {
+                "channel": None,
+                "backend": list(backend_size) if backend_size else None,
+                "refreshed": False,
+                "refreshable": False,
+                "consistent": False,
+                "checked_at": _utc_now(),
+                "reason": "显式 u2 注入;无可用视频通道,不启动通道校验基准",
+            }
+        )
+
     # ── 注入双通道(scroll/图像点击发送/press_key 与 adapter.device 共用)──
 
     def inject_gesture(self, backend, source, scrcpy_gesture, u2_gesture) -> str:
@@ -526,13 +558,16 @@ class DeviceSession:
 
         坐标基准:实际走 scrcpy 通道(含显式 ``source="scrcpy"``)时,首写
         之前调用 :meth:`ensure_coordinate_basis` 校验/刷新并记录基准;显式
-        scrcpy 只校验不改道。``source="u2"`` 与降级窗口内直接走 u2 的路径
-        不经通道,不存在通道基准,故不校验。
+        scrcpy 只校验不改道。显式 ``source="u2"``:已有可用通道时同样校验并
+        记录;没有通道时只记录 ``channel=null``/``refreshable=false`` 与原因,
+        不为校验而启动通道,也绝不改道。降级窗口内直接走 u2 的路径不探测
+        通道(降级原因即通道不可用)。
         """
         from .device_ops import _CleanFallback
 
         resolved = source if source != "auto" else self._config.injection_source
         if resolved == "u2":
+            self._record_u2_basis(backend)
             u2_gesture()
             return self._note_injection_channel("u2")
         if resolved == "auto" and self._scrcpy_degraded_until > time.monotonic():
@@ -713,9 +748,11 @@ class DeviceSession:
                 return "finished"  # 已完成,无需记录
             op_state.cancelled = True
         future.cancel()  # 未开始则取消;已开始无效果
+        with self._injection_lock:
+            self._last_cancel_after_send = op_state.entered_send
         if op_state.entered_send:
             return "unknown"  # 已进入发送阶段:设备侧结果未知
-        return "cancelled-before-send" if future.cancelled() else "unknown"
+        return "cancelled-before-send"  # 未进入发送:检查点保证不会发送
 
     def operation_outcome(self, future: Future) -> str:
         """查询操作结局:cancelled-queued / cancelled-before-send / unknown /
