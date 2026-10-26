@@ -29,6 +29,7 @@ from ..errors import (
     UnsupportedOperation,
     WaitTimeout,
 )
+from ..evidence.journal import journaled
 from .selectors import (
     NATIVE_LOCATORS,
     attribute_value,
@@ -276,6 +277,7 @@ class MobileAdapter:
             f"{', '.join(dismissed)}),仍未见目标"
         )
 
+    @journaled("goto")
     async def goto(
         self,
         target: str = "",
@@ -315,6 +317,7 @@ class MobileAdapter:
             lambda backend: backend.app_start(package, activity, stop=True)
         )
 
+    @journaled("wait_for_load")
     async def wait_for_load(self) -> None:
         """仅等待配置的启动就绪目标可见(plan Q2);超时抛 WaitTimeout。
 
@@ -350,10 +353,12 @@ class MobileAdapter:
                 )
             await asyncio.sleep(min(config.poll_interval, remaining))
 
+    @journaled("back")
     async def back(self) -> None:
         """发送一次 Android 返回;不自动等待页面就绪。"""
         await self.press_key("back")
 
+    @journaled("press_key")
     async def press_key(self, name: str) -> None:
         """发送有限键表内的按键;未知键报错,不开放任意 keycode。
 
@@ -368,6 +373,7 @@ class MobileAdapter:
             lambda backend: self._session.inject_press_key(backend, name)
         )
 
+    @journaled("scroll")
     async def scroll(self, direction: str, amount: int) -> None:
         """滚动:direction 为视口沿内容移动方向(down 对应手指向上)。
 
@@ -392,6 +398,7 @@ class MobileAdapter:
 
         await self._call(operation)
 
+    @journaled("input_text")
     async def input_text(self, target: Target, text: str) -> None:
         """清空并替换目标文本;不可编辑目标明确失败,不隐式追加。
 
@@ -412,6 +419,7 @@ class MobileAdapter:
 
         await self._poll_until(attempt, target)
 
+    @journaled("get_attribute")
     async def get_attribute(self, target: Target, name: str) -> str | tuple[int, int, int, int]:
         """读取属性:未知属性立即报错;已知缺失返回空串;布尔为 true/false。"""
         self._reject_image(target, "get_attribute")
@@ -426,6 +434,7 @@ class MobileAdapter:
 
         return await self._poll_until(attempt, target)
 
+    @journaled("find_elements")
     async def find_elements(self, target: Target) -> list[ElementHandle]:
         """无序号返回全部可见匹配(树遍历序);有序号返回至多一个。
         句柄绑定本会话,重用前自动重校验;每个句柄的 Target 记录自己的
@@ -461,6 +470,7 @@ class MobileAdapter:
 
         return await self._call(operation)
 
+    @journaled("is_visible")
     async def is_visible(self, target: Target) -> bool:
         """单次查询,不进行长等待。IMAGE 目标为单轮采集匹配。"""
 
@@ -472,6 +482,7 @@ class MobileAdapter:
 
         return await self._call(operation)
 
+    @journaled("wait_for")
     async def wait_for(self, target: Target, timeout: float | None = None) -> bool:
         """默认 10 秒、轮询 0.5 秒;存在返回 True,预算耗尽返回 False。
 
@@ -510,6 +521,7 @@ class MobileAdapter:
                 return False
             await asyncio.sleep(min(self._session.config.poll_interval, remaining))
 
+    @journaled("click")
     async def click(self, target: Target) -> None:
         """等待单目标可见(预算内轮询)后,在同一队列任务里发送一次点击。
 
@@ -550,6 +562,7 @@ class MobileAdapter:
 
         await self._poll_until(attempt, target)
 
+    @journaled("get_text")
     async def get_text(self, target: Target) -> str:
         """等待单目标可见后返回原生文本;已知缺失归一为空字符串。"""
         self._reject_image(target, "get_text")
@@ -563,6 +576,7 @@ class MobileAdapter:
 
         return await self._poll_until(attempt, target)
 
+    @journaled("screenshot")
     async def screenshot(self) -> bytes:
         """新采集画面显式编码为 PNG;不返回缓存帧。
 
@@ -570,6 +584,7 @@ class MobileAdapter:
         """
         return await self._call(lambda backend: self._session.screenshot_bytes(backend))
 
+    @journaled("close")
     async def close(self) -> None:
         """幂等;仅结束本会话的调度,不停止 App。"""
         await asyncio.to_thread(self._session.close)

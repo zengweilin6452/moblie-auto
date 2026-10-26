@@ -99,9 +99,25 @@
       <div class="evidence-layout">
         <ul id="evidence-list"></ul>
         <div id="evidence-detail" class="hidden">
-          <img id="evidence-frame" alt="证据画面" class="hidden" />
-          <table id="evidence-attr"><tbody></tbody></table>
-          <ul id="evidence-files"></ul>
+          <nav id="evidence-subtabs" class="tabs">
+            <button class="tab active" data-evidence-tab="detail" type="button">详情</button>
+            <button class="tab" data-evidence-tab="journal" type="button">动作流水</button>
+          </nav>
+          <div id="evidence-tab-detail">
+            <img id="evidence-frame" alt="证据画面" class="hidden" />
+            <table id="evidence-attr"><tbody></tbody></table>
+            <ul id="evidence-files"></ul>
+          </div>
+          <div id="evidence-tab-journal" class="hidden">
+            <p id="evidence-journal-summary" class="muted"></p>
+            <table id="evidence-journal">
+              <thead>
+                <tr><th>步</th><th>时间</th><th>操作</th><th>目标</th><th>耗时(ms)</th><th>结果</th><th>通道</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <p id="evidence-journal-note" class="muted"></p>
+          </div>
         </div>
       </div>
     </section>

@@ -123,6 +123,10 @@ body.evidence-mode #tree-pane { display: none; }
 .evidence-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 #evidence-list li { cursor: pointer; padding: 0.25rem 0.4rem; border-bottom: 1px solid #ddd; }
 #evidence-frame { max-width: 100%; border: 1px solid #ccc; }
+#evidence-subtabs { margin: 0 0 8px; }
+#evidence-journal { width: 100%; border-collapse: collapse; font-size: 11px; display: block; max-height: 60vh; overflow: auto; }
+#evidence-journal th, #evidence-journal td { padding: 2px 6px; border-bottom: 1px solid #eee; text-align: left; white-space: nowrap; }
+#evidence-journal-summary { font-size: 12px; }
 
 #occupancy-box { margin-bottom: 0.5rem; font-size: 0.85em; }
 #occupancy-table { width: 100%; }

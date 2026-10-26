@@ -83,6 +83,21 @@ def _pool_base_config(pytest_config):
     return load_config(config_path)
 
 
+def _enable_journal(session, enabled: bool):
+    """跟随 --mobile-evidence 挂接动作流水;关闭时零行为、不建文件。
+
+    路径由会话的 artifacts_dir 决定(池化时已是 xdist worker 目录),
+    与失败证据同源;文件本身懒创建,首次记录才落盘。
+    """
+    if not enabled:
+        return None
+    from .journal import Journal
+
+    journal = Journal(session.config.artifacts_dir, session.session_id)
+    session.set_journal(journal)
+    return journal
+
+
 @pytest.fixture(scope="session")
 def mobile_session(request):
     """池化设备会话:抢池内一台设备的租约并绑定会话。
@@ -121,8 +136,11 @@ def mobile_session(request):
         phase="running",
         serial=serial,
     )
+    _enable_journal(session, request.config.getoption("--mobile-evidence"))
     yield session
     session.close()  # 释放租约;释放不回滚已发送的操作
+    if session.journal is not None:
+        session.journal.close()
     write_run_state(
         base.artifacts_dir / "runs", worker=worker, phase="finished", serial=serial
     )

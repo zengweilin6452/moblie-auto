@@ -139,6 +139,7 @@ def _probe_device_info(serial: str) -> dict:
 
 _EVIDENCE_ID = re.compile(r"[0-9a-f]{16}")
 _EVIDENCE_LIST_LIMIT = 200
+_JOURNAL_LINE_LIMIT = 5000  # 面板一次最多渲染的行数(32 MiB 文件的保护栏)
 _EVIDENCE_MEDIA = {
     ".png": "image/png",
     ".xml": "text/xml; charset=utf-8",
@@ -209,6 +210,49 @@ def _read_evidence_file(config, evidence_id: str, name: str):
         except OSError:
             return None
         return payload, _EVIDENCE_MEDIA.get(path.suffix.lower(), "application/octet-stream")
+    return None
+
+
+def _read_evidence_journal(
+    config, evidence_id: str, limit: int = _JOURNAL_LINE_LIMIT
+) -> dict | None:
+    """读取该证据同目录层的动作流水(与证据同在 worker/基础产物目录)。
+
+    journal 不在 evidence/<id>/ 内、也未登记进 meta["artifacts"],现有
+    /files/{name} 白名单取不到,因此单独按证据父目录反查;
+    _list_evidence 用 ``**/evidence/*/meta.json``,这里同样兼容任意层级。
+    """
+    import json
+
+    if not _EVIDENCE_ID.fullmatch(evidence_id):
+        return None
+    for meta_path in Path(config.artifacts_dir).glob(
+        f"**/evidence/{evidence_id}/meta.json"
+    ):
+        journal_path = meta_path.parents[2] / "actions.jsonl"
+        try:
+            text = journal_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        lines = []
+        for raw in text.splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                lines.append(json.loads(raw))
+            except ValueError:
+                continue
+        truncated = any(
+            line.get("op") == "journal" and line.get("outcome") == "truncated"
+            for line in lines
+        )
+        return {
+            "evidence_id": evidence_id,
+            "lines": lines[:limit],
+            "total": len(lines),
+            "truncated": truncated or len(lines) > limit,
+        }
     return None
 
 
@@ -347,9 +391,19 @@ class _DeviceRegistry:
         return registry
 
     def _default_session_factory(self, serial: str) -> DeviceSession:
+        from ..evidence.journal import Journal
+
         session = DeviceSession(dataclasses.replace(self._config, device_serial=serial))
         session.start()  # 连接失败 → DeviceUnavailable,由调用方如实报错
         session.release_lease()  # 网页空闲态 READY
+        # viewer 侧动作流水始终开启:按设备分层,与 pytest 的 xdist-*/ 物理分开
+        safe = re.sub(r"[^0-9A-Za-z._-]", "_", serial)
+        session.set_journal(
+            Journal(
+                Path(self._config.artifacts_dir) / "viewer" / safe,
+                session.session_id,
+            )
+        )
         return session
 
     def default_serial(self) -> str | None:
@@ -436,6 +490,8 @@ class _DeviceRegistry:
                 entry.manager.shutdown()
             if entry.session is not None:
                 entry.session.close()
+                if entry.session.journal is not None:
+                    entry.session.journal.close()
 
 
 def _build_stream_frame(
@@ -624,6 +680,18 @@ def create_app(
             media_type=media_type,
             headers={"cache-control": "no-store"},
         )
+
+    @app.get("/api/v1/evidence/{evidence_id}/journal")
+    async def evidence_journal(evidence_id: str, request: Request):
+        """证据对应的动作流水:按证据父目录找同 worker 的 actions.jsonl。"""
+        data = await asyncio.to_thread(
+            _read_evidence_journal, app.state.registry.config, evidence_id
+        )
+        if data is None:
+            return error_envelope(
+                request, 404, "not-found", "该证据没有动作流水(未开启证据或未产生记录)"
+            )
+        return {**data, "request_id": request.state.request_id}
 
     # ── 占用与运行态(P2 工单 07;只读)─────────────────────
 
@@ -997,24 +1065,59 @@ def create_app(
             values.append(min(max(float(value), 0.0), 1.0))
         return values
 
-    def _inject(session: DeviceSession, manager: _ChannelManager, operation):
+    def _inject(
+        session: DeviceSession,
+        manager: _ChannelManager,
+        operation,
+        *,
+        op,
+        extra=None,
+    ):
         """短事务注入:租约(409 门控)→ 队列串行执行 → 释放。
 
         会话与通道管理器按请求解析的目标设备传入;视频通道懒启动遵循
         同一租约门控;超时且任务仍在运行时,租约保留至任务实际结束
-        (经 _LeaseGuard 移交),失败时如实报错。
+        (经 _LeaseGuard 移交),失败时如实报错。动作流水只观察,不改变
+        注入结果(viewer 侧始终写 <artifacts>/viewer/<serial>/actions.jsonl)。
         """
-        with _LeaseGuard(session) as guard:
-            channel = manager.get()
-            if channel is None or not channel.healthy():
-                raise StreamUnavailable("视频流通道不可用,无法注入")
-            _submit_bounded(
-                session,
-                guard,
-                lambda backend: operation(channel),
-                timeout=10.0,
-                error_message="注入执行超时",
-            )
+        journal = session.journal
+        started = time.monotonic()
+        try:
+            with _LeaseGuard(session) as guard:
+                channel = manager.get()
+                if channel is None or not channel.healthy():
+                    raise StreamUnavailable("视频流通道不可用,无法注入")
+                _submit_bounded(
+                    session,
+                    guard,
+                    lambda backend: operation(channel),
+                    timeout=10.0,
+                    error_message="注入执行超时",
+                )
+        except Exception as exc:
+            if journal is not None:
+                # 失败时通道未必真的用上,不臆造 channel
+                error_extra = (
+                    {key: value for key, value in extra.items() if key != "channel"}
+                    if extra
+                    else None
+                )
+                journal.record(
+                    op,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                    outcome="error",
+                    error_type=type(exc).__name__,
+                    extra=error_extra,
+                )
+            raise
+        else:
+            if journal is not None:
+                journal.record(
+                    op,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                    outcome="ok",
+                    extra=extra,
+                )
 
     @app.post("/api/v1/input/touch")
     async def input_touch(request: Request, device: str | None = None):
@@ -1040,6 +1143,8 @@ def create_app(
                         )
                     )(channel.screen_size())
                 ),
+                op="viewer.tap",
+                extra={"point": [nx, ny], "normalized": True, "channel": "scrcpy"},
             )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)
@@ -1079,6 +1184,13 @@ def create_app(
                     )(channel.screen_size()),
                     duration_s=duration_s,
                 ),
+                op="viewer.swipe",
+                extra={
+                    "from": [nx0, ny0],
+                    "to": [nx1, ny1],
+                    "normalized": True,
+                    "channel": "scrcpy",
+                },
             )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)
@@ -1095,7 +1207,12 @@ def create_app(
         _, session, manager = _resolve(device)
         try:
             await asyncio.to_thread(
-                _inject, session, manager, lambda channel: channel.press_key(name)
+                _inject,
+                session,
+                manager,
+                lambda channel: channel.press_key(name),
+                op="viewer.press_key",
+                extra={"key": name, "channel": "scrcpy"},
             )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)
@@ -1110,7 +1227,11 @@ def create_app(
         _, session, manager = _resolve(device)
         try:
             await asyncio.to_thread(
-                _inject, session, manager, lambda channel: channel.wake()
+                _inject,
+                session,
+                manager,
+                lambda channel: channel.wake(),
+                op="viewer.wake",
             )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)

@@ -75,6 +75,8 @@ def collect_failure_evidence(
         session, timeout, failure_at
     )
     capture_time = _utc_now()
+    journal = getattr(session, "journal", None)
+    journal_summary = journal.summary() if journal is not None else None
     if reason is not None:
         not_captured.append({"kind": "post-failure", "reason": reason})
     if frame is not None:
@@ -102,6 +104,8 @@ def collect_failure_evidence(
         "frame_source": frame_source,
         "artifacts": artifacts,
         "not_captured": not_captured,
+        # 动作流水摘要(工单 01):步数/总耗时/首个失败步;未开启证据时为 null
+        "journal_summary": journal_summary,
     }
     (base_dir / "meta.json").write_text(
         json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"

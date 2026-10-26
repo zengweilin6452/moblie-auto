@@ -18,6 +18,7 @@ from __future__ import annotations
 import enum
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TypeVar
@@ -138,6 +139,13 @@ class DeviceSession:
         # 只读快照对外暴露,写入用独立锁(读取方来自 pytest 线程)
         self._dialog_guard_lock = threading.Lock()
         self._dialog_guard_stats = {"attempts": 0, "dismissed": [], "last_at": None}
+        # 动作流水(工单 01):会话标识、注入通道快照与 Journal 句柄。
+        # 适配器装饰器每次公共调用前 begin_operation() 清空通道,调用后读取,
+        # 避免把上一步的通道记到这一步(读取方来自 pytest/事件循环线程)。
+        self._session_id = uuid.uuid4().hex[:8]
+        self._injection_lock = threading.Lock()
+        self._last_injection_channel: str | None = None
+        self._journal = None
 
     @property
     def config(self) -> MobileConfig:
@@ -168,6 +176,36 @@ class DeviceSession:
             self._dialog_guard_stats["attempts"] += 1
             self._dialog_guard_stats["dismissed"].extend(dismissed)
             self._dialog_guard_stats["last_at"] = time.time()
+
+    @property
+    def session_id(self) -> str:
+        """构造时生成的 8 位随机标识,动作流水按它归属同一次会话。"""
+        return self._session_id
+
+    @property
+    def journal(self):
+        """动作流水句柄;未挂接(未开启证据)时为 None,适配器零开销。"""
+        return self._journal
+
+    def set_journal(self, journal) -> None:
+        """挂接动作流水;生命周期归调用方(关闭由挂接方负责)。"""
+        self._journal = journal
+
+    def begin_operation(self) -> None:
+        """公共操作开始:清空上一次的注入通道快照。"""
+        with self._injection_lock:
+            self._last_injection_channel = None
+
+    @property
+    def last_injection_channel(self) -> str | None:
+        """最近一次成功后实际使用的注入通道("scrcpy"/"u2");加锁只读快照。"""
+        with self._injection_lock:
+            return self._last_injection_channel
+
+    def _note_injection_channel(self, channel: str) -> str:
+        with self._injection_lock:
+            self._last_injection_channel = channel
+        return channel
 
     # ── 生命周期 ─────────────────────────────────────────────
 
@@ -314,10 +352,10 @@ class DeviceSession:
         resolved = source if source != "auto" else self._config.injection_source
         if resolved == "u2":
             u2_gesture()
-            return "u2"
+            return self._note_injection_channel("u2")
         if resolved == "auto" and self._scrcpy_degraded_until > time.monotonic():
             u2_gesture()
-            return "u2"
+            return self._note_injection_channel("u2")
         try:
             channel = self.get_or_start_channel()
         except Exception:
@@ -325,7 +363,7 @@ class DeviceSession:
             if resolved == "scrcpy":
                 raise
             u2_gesture()
-            return "u2"
+            return self._note_injection_channel("u2")
         try:
             scrcpy_gesture(channel)
         except _CleanFallback as failure:
@@ -333,12 +371,12 @@ class DeviceSession:
             if resolved == "scrcpy":
                 raise failure.original from None
             u2_gesture()  # DOWN 未发出:整体回退
-            return "u2"
+            return self._note_injection_channel("u2")
         except Exception:
             self._note_channel_failure()
             raise  # DOWN 后失败:手势已抬指收尾,不重放
         self._note_channel_success()
-        return "scrcpy"
+        return self._note_injection_channel("scrcpy")
 
     def inject_tap(self, backend, x: int, y: int) -> None:
         """坐标单击(图像点击事务的发送路径);通道按配置 injection_source。"""

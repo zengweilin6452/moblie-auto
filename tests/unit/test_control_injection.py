@@ -173,3 +173,49 @@ def test_injection_fails_when_channel_unavailable(control_env):
     res = http.post("/api/v1/input/touch", json={"nx": 0.5, "ny": 0.5})
     assert res.status_code == 503
     assert res.json()["code"] == "StreamUnavailable"
+
+
+def _viewer_journal(tmp_path, session):
+    import json
+
+    from mobile_auto.evidence.journal import Journal
+
+    journal = Journal(tmp_path / "viewer" / "SERIAL1", session.session_id)
+    session.set_journal(journal)
+
+    def lines():
+        return [
+            json.loads(line)
+            for line in journal.path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    return journal, lines
+
+
+def test_viewer_injection_writes_action_journal(control_env, tmp_path):
+    http, session, channel, _ = control_env
+    journal, lines = _viewer_journal(tmp_path, session)
+    http.post("/api/v1/control", json={"enabled": True})
+    assert http.post("/api/v1/input/touch", json={"nx": 0.5, "ny": 0.5}).status_code == 200
+    [line] = lines()
+    assert line["op"] == "viewer.tap"
+    assert line["outcome"] == "ok"
+    assert line["channel"] == "scrcpy"
+    assert line["point"] == [0.5, 0.5]
+    assert line["normalized"] is True
+    assert line["session"] == session.session_id
+    journal.close()
+
+
+def test_viewer_injection_failure_is_recorded(control_env, tmp_path):
+    http, session, channel, _ = control_env
+    journal, lines = _viewer_journal(tmp_path, session)
+    http.post("/api/v1/control", json={"enabled": True})
+    channel.stopped = True
+    assert http.post("/api/v1/input/touch", json={"nx": 0.1, "ny": 0.1}).status_code == 503
+    [line] = lines()
+    assert line["op"] == "viewer.tap"
+    assert line["outcome"] == "error"
+    assert line["error_type"] == "StreamUnavailable"
+    journal.close()

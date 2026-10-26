@@ -102,3 +102,46 @@ def test_empty_artifacts_dir_is_ok(tmp_path):
         data = client.get("/api/v1/evidence").json()
     session.close()
     assert data["evidence"] == []
+
+
+WORKER_EVIDENCE_ID = "fedcba9876543210"
+
+
+def test_journal_endpoint_reads_worker_journal(app_with_evidence, tmp_path):
+    worker = tmp_path / "xdist-gw7"
+    evidence_dir = worker / "evidence" / WORKER_EVIDENCE_ID
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "evidence_id": WORKER_EVIDENCE_ID,
+                "created_at": "2026-10-25T11:00:00",
+                "device": {"serial": "SERIAL1"},
+                "artifacts": [],
+                "not_captured": [],
+                "journal_summary": {"steps": 2, "first_failure": None},
+            }
+        ),
+        encoding="utf-8",
+    )
+    rows = [
+        {"ts": "2026-10-25T11:00:00.001Z", "op": "goto", "outcome": "ok", "duration_ms": 1.0},
+        {"ts": "2026-10-25T11:00:00.002Z", "op": "click", "outcome": "ok", "duration_ms": 2.0},
+        {"op": "journal", "outcome": "truncated"},
+    ]
+    (worker / "actions.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+    res = app_with_evidence.get(f"/api/v1/evidence/{WORKER_EVIDENCE_ID}/journal")
+    assert res.status_code == 200
+    data = res.json()
+    assert [line["op"] for line in data["lines"]] == ["goto", "click", "journal"]
+    assert data["total"] == 3
+    assert data["truncated"] is True
+
+
+def test_journal_endpoint_404_without_journal(app_with_evidence):
+    res = app_with_evidence.get(f"/api/v1/evidence/{EVIDENCE_ID}/journal")
+    assert res.status_code == 404
+    assert res.json()["code"] == "not-found"
+    assert app_with_evidence.get("/api/v1/evidence/not-hex!/journal").status_code == 404

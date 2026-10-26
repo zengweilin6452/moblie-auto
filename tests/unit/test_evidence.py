@@ -97,6 +97,7 @@ def test_evidence_written_and_registered(tmp_path):
         "screen_size": [1080, 2400],
         "dialog_guard": {"attempts": 0, "dismissed": [], "last_at": None},
     }
+    assert meta["journal_summary"] is None  # 未挂接动作流水的会话
     kinds = {a["kind"] for a in meta["artifacts"]}
     assert kinds == {"operation-frame", "failure-frame", "ui-tree"}
     assert all(a["captured_at"] for a in meta["artifacts"])

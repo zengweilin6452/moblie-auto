@@ -25,6 +25,7 @@ from __future__ import annotations
 import time
 
 from ..errors import InvalidTarget, StreamUnavailable
+from ..evidence.journal import journaled
 
 _SOURCES = ("auto", "scrcpy", "u2")
 _MAX_SECONDS = 10.0  # 手势时长上限:阻塞会话队列线程的保护栏
@@ -135,6 +136,7 @@ class DeviceOps:
     def __init__(self, adapter) -> None:
         self._adapter = adapter
 
+    @journaled("device.tap")
     async def tap(self, x: int, y: int, *, source: str = "auto") -> str:
         """单击坐标点;返回实际使用的通道("scrcpy" / "u2")。"""
         _validate_xy((x, y))
@@ -150,6 +152,7 @@ class DeviceOps:
 
         return await self._adapter._call(op)
 
+    @journaled("device.swipe")
     async def swipe(
         self,
         x0: int,
@@ -178,6 +181,7 @@ class DeviceOps:
 
         return await self._adapter._call(op)
 
+    @journaled("device.long_press")
     async def long_press(
         self, x: int, y: int, hold_s: float = 0.8, *, source: str = "auto"
     ) -> str:
