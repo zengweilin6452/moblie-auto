@@ -198,6 +198,36 @@ value = '{"packageName":"com.lbe.security.miui","text":"拒绝"}'
 
 回滚:删除 `dialog_guard` 配置即恢复原行为,无数据迁移。
 
+## 11. 动作流水(契约外观测,2026-10-26)
+
+每次公共调用一行 JSONL,作为 flake 定位、每步耗时归因与 viewer 回放的数据源。
+记录点在 `MobileAdapter` 公共方法与 `adapter.device` 手势面(装饰器),
+不在设备队列内部:一次 `wait_for` 只一行,含完整轮询耗时。
+
+- **落盘**:pytest 侧跟随 `--mobile-evidence`,与失败证据同源——
+  `<artifacts>/xdist-<worker>/actions.jsonl`,非 xdist 为
+  `<artifacts>/actions.jsonl`;viewer 侧始终写
+  `<artifacts>/viewer/<serial>/actions.jsonl`(按设备分层)。目录不可写时
+  自动禁用并一次性告警,不改变操作结果。单文件上限 32 MiB,超限追加
+  `{"op":"journal","outcome":"truncated"}` 后停止写入。
+- **字段**:`ts`(UTC 毫秒)/`session`(会话 8 位随机 id)/`op`/
+  `duration_ms`/`outcome`(`ok`/`not_found`/`error`/`unknown`)/
+  `error_type`(异常类名,不含消息)/`channel`(仅注入类操作,取实际通道)/
+  `target`(只含 `by`/`value`/`index`/`confidence`/`region`)。
+- **脱敏**:`input_text` 只记 `text_length`,不记原文;`get_text` 不记返回值;
+  `goto` 只记 `scheme` 或 `"cold_start"`;读取类不带 `channel`。
+- **消费者**:失败证据 `meta.json` 的 `journal_summary`(步数/总耗时/首个失败步);
+  viewer 证据面板「动作流水」页签(端点
+  `/api/v1/evidence/{id}/journal`,按证据同 worker 目录反查,不走
+  `/files/{name}` 白名单)。
+- **前提**:动作流水假设设备访问都经 `MobileAdapter`;绑定层直接调用
+  `DeviceSession`/`DeviceBackend` 会漏记。绑定层应委托适配器公共方法。
+- **日志器命名约定**:按功能命名,`mobile_auto.dialog_guard`(弹窗守卫)与
+  `mobile_auto.journal`(动作流水)是仅有的两个;只经模块级 logger 输出
+  `warning`/`info`,不自建 handler,观测失败不得影响操作结果。
+
+回滚:删除装饰器与 `evidence/journal.py` 即可,无数据迁移。
+
 ## 并行执行与 CI 投屏接入(P2,2026-10-25)
 
 **设备池并行(pytest-xdist)**:池协调即设备租约目录,无中心服务。
