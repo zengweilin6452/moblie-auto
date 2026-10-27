@@ -339,6 +339,15 @@ spec:.scratch/scrcpy-upstream/(协议对照 v5.0.1 源码逐项核实);提交 63
 - 默认 stream_backend 已翻转为 upstream;wetest 保留为回退(显式 stream_backend="wetest")。
 - 遗留(2026-10-25 更新):capture_png 分辨率语义已随 PRD §8.5 修订(upstream=流分辨率,全分辨率取证走 u2);wetest 通道删除工单仍待内网设备矩阵验证。
 
+## reuse-smart-dri 评审:双机门槛降级与跨密度替代(2026-10-25)
+
+- 现状:84cb2c4e 当前不在 `adb devices` 列表(仅 749622c9),双机门槛无法执行;上一节的双机记录仍是有效历史依据,不作废。
+- 降级:`pytest tests/device` 以 749622c9 单机 + fake 通道通过为准;84cb2c4e(Android 17)上线后补跑双机,并补一次 viewer 并发出流与注入回归。
+- **跨密度验收替代**:不依赖"另一台同分辨率不同密度设备",改用同机 `adb shell wm density 480` 覆盖(记录原值,`finally` 里 `wm density reset`)采两帧 + 两棵 UI 树。判据:①内容仅均匀放大(树结构/节点数一致)②多元素拟合尺度 ≈ 480/440 = 1.0909 ③资源桶未切换(sw392dp 保持)。
+- 该探针同时是 `.scratch/reuse-smart-dri/issues/02-density-aware-scaling.md` 的开工闸门;三项任一不过则 02 降级为"模板限同 density 设备复用"的文档约定,不当场加宽尺度硬试。
+- 2026-10-26 更新:本轮环境无设备,闸门未执行;经确认先实现算法(密度路径仅在模板 meta 带 density 时启用,旧模板行为不变),闸门与跨密度真机验收见下文「工单 02」小节。
+- 待补项(设备上线后):双机 `tests/device` 复跑;84cb2c4e 的 viewer 并发出流与注入;出现 `wm size` 覆盖/折叠屏机型时的坐标基准反例(见 04)。
+
 ## 动作流水(工单 01,2026-10-26)
 
 - **单元/契约验证**:`tests/unit/test_journal.py` 覆盖字段与脱敏、`ok`/
