@@ -10,12 +10,29 @@ const state = {
   treeNodes: [],
   treeCapturedAt: null,
   deviceSpace: null, // {w, h}:当前画面(流帧或快照)的设备像素空间
+  h264Active: false, // H.264 直解档(canvas)是否在用
+  videoNote: "", // 直解档降级说明(JPEG 帧刷新时保留,不被覆盖)
   pickedLocator: null, // {by, value, expression, risk}
   hoverNodeIndex: null,
   lastFrameAt: 0,
 };
 
 const qs = () => (state.device ? `?device=${encodeURIComponent(state.device)}` : "");
+
+/* 当前画面媒体元素:H.264 直解档为 canvas,JPEG 档/冻结快照为 img */
+function mediaEl() {
+  return state.h264Active ? $("video-canvas") : $("preview");
+}
+function mediaWidth(el) {
+  return el.naturalWidth || el.width;
+}
+function mediaHeight(el) {
+  return el.naturalHeight || el.height;
+}
+function showCanvas(on) {
+  state.h264Active = on;
+  $("stage").classList.toggle("h264", on);
+}
 
 /* ── 状态与设备 ─────────────────────────────────────────── */
 
@@ -95,10 +112,11 @@ function renderDeviceInfo(serial) {
 
 async function switchDevice(serial) {
   state.device = serial;
+  closeVideo();
   closePreviewSocket();
   setView("live"); // 含 clearInspectInfo:清空旧设备的检查产物
   state.deviceSpace = null;
-  connectPreview(); // 旧连接已关且自动重连回调被清除:按新设备寻址重建
+  connectVideo(); // 按新设备重新探测能力并接入实时画面
   refreshStatus();
 }
 
@@ -117,6 +135,9 @@ function setView(view) {
     clearInspectInfo();
     freezeControl.release(); // 冻结引用不释放会把实时快照配额挤满
     setFreezeNotice("");
+    reconnectMedia(); // 检查期间 canvas 让位给快照 img,回实时按需接回
+  } else {
+    showCanvas(false); // 冻结快照显示在 img 上,canvas 必须让位
   }
 }
 
@@ -259,12 +280,12 @@ async function onTreeNodeClick(node) {
 
 function drawBox(bounds, cls) {
   clearOverlay(cls === "hover-box" ? null : cls);
-  const img = $("preview");
-  if (!img.naturalWidth || !bounds) return;
-  const spaceW = state.deviceSpace ? state.deviceSpace.w : img.naturalWidth;
-  const spaceH = state.deviceSpace ? state.deviceSpace.h : img.naturalHeight;
-  const scaleX = MobileCoords.displayScale(img.clientWidth, spaceW);
-  const scaleY = MobileCoords.displayScale(img.clientHeight, spaceH);
+  const el = mediaEl();
+  if (!bounds || !el.clientWidth) return;
+  const spaceW = state.deviceSpace ? state.deviceSpace.w : mediaWidth(el);
+  const spaceH = state.deviceSpace ? state.deviceSpace.h : mediaHeight(el);
+  const scaleX = MobileCoords.displayScale(el.clientWidth, spaceW);
+  const scaleY = MobileCoords.displayScale(el.clientHeight, spaceH);
   const box = document.createElement("div");
   box.className = cls || "highlight";
   box.style.left = `${bounds[0] * scaleX}px`;
@@ -280,15 +301,25 @@ function clearOverlay(cls) {
   }
 }
 
+/* 指针位置 → 归一化坐标(以实际画面元素显示盒为准,容器与画面完全重合) */
+function normCoords(event) {
+  const rect = mediaEl().getBoundingClientRect();
+  const clamp = (v) => Math.min(Math.max(v, 0), 1);
+  return {
+    nx: clamp(rect.width ? (event.clientX - rect.left) / rect.width : 0),
+    ny: clamp(rect.height ? (event.clientY - rect.top) / rect.height : 0),
+  };
+}
+
 /* 浏览器缩放/留白:CSS 坐标 → 设备像素(快照或流帧的设备空间) */
 function toPixelCoords(event) {
-  const img = $("preview");
-  const rect = img.getBoundingClientRect();
+  const el = mediaEl();
+  const rect = el.getBoundingClientRect();
   return MobileCoords.eventToPixel(
     event,
     rect,
-    state.deviceSpace ? state.deviceSpace.w : img.naturalWidth,
-    state.deviceSpace ? state.deviceSpace.h : img.naturalHeight,
+    state.deviceSpace ? state.deviceSpace.w : mediaWidth(el),
+    state.deviceSpace ? state.deviceSpace.h : mediaHeight(el),
   );
 }
 
@@ -473,14 +504,23 @@ async function validatePicked() {
   $("validate-note").textContent = `匹配 ${data.count} 个 · ${data.note}`;
 }
 
-/* ── 直接控制(仅实时视图)────────────────────────────── */
+/* ── 单操作者控制(凭据制;仅实时视图)────────────────── */
 
-const control = { enabled: false, dragStart: null };
+const control = {
+  enabled: false,
+  token: null, // 操作者凭据:仅页面内存,不落 URL/存储
+  heartbeat: null,
+  seq: 0, // 手势消息序号(单调递增)
+  dragStart: null,
+  gesture: null,
+};
 
-async function apiPost(path, body) {
+async function apiPost(path, body, token) {
+  const headers = { "content-type": "application/json" };
+  if (token) headers["x-viewer-control"] = token;
   const res = await fetch(path, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify(body || {}),
   });
   const data = await res.json().catch(() => ({}));
@@ -489,12 +529,24 @@ async function apiPost(path, body) {
 }
 
 async function setControlMode(enabled) {
-  if (enabled && !confirm("直接控制会向真机发送点击/滑动。\n确认启用?")) return;
-  try {
-    await apiPost("/api/v1/control", { enabled });
-  } catch (err) {
-    $("control-note").textContent = `切换失败 ${err.message}`;
-    enabled = false;
+  if (enabled) {
+    if (
+      !confirm(
+        "直接控制会向真机发送点击/滑动。\n确认启用?(单操作者:他人持有控制权时会被拒绝)",
+      )
+    ) {
+      $("control-toggle").checked = false;
+      return;
+    }
+    try {
+      const data = await apiPost("/api/v1/control", { enabled: true }, control.token);
+      control.token = data.token;
+      startControlHeartbeat();
+    } catch (err) {
+      $("control-note").textContent = `切换失败 ${err.message}`;
+      $("control-toggle").checked = false;
+      return;
+    }
   }
   control.enabled = enabled;
   $("control-toggle").checked = enabled;
@@ -502,27 +554,106 @@ async function setControlMode(enabled) {
   for (const id of ["btn-key-back", "btn-key-home", "btn-wake"]) {
     $(id).disabled = !enabled;
   }
-  if (enabled) setView("live"); // 注入按实时画面坐标计算,控制只能在实时视图
-  $("control-note").textContent = enabled
-    ? "控制中:点击画面=单击,拖动=滑动"
-    : "";
+  if (enabled) {
+    setView("live"); // 注入按实时画面坐标计算,控制只能在实时视图
+    $("control-note").textContent =
+      "控制中:按住拖动=滑动,单击=点击(约 1 秒心跳续期)";
+  } else {
+    stopControlHeartbeat();
+    const token = control.token;
+    control.token = null;
+    if (token) apiPost("/api/v1/control", { enabled: false }, token).catch(() => {});
+    $("control-note").textContent = "";
+  }
+}
+
+function startControlHeartbeat() {
+  stopControlHeartbeat();
+  control.heartbeat = setInterval(async () => {
+    try {
+      await apiPost("/api/v1/control/heartbeat", {}, control.token);
+    } catch {
+      // 心跳被拒(失联被撤权/他人领用):本地降级,等待操作者重新启用
+      stopControlHeartbeat();
+      control.enabled = false;
+      control.token = null;
+      control.gesture = null;
+      $("control-toggle").checked = false;
+      $("stage").classList.remove("control-mode");
+      for (const id of ["btn-key-back", "btn-key-home", "btn-wake"]) {
+        $(id).disabled = true;
+      }
+      $("control-note").textContent = "控制权已失效,请重新启用";
+    }
+  }, 1000);
+}
+
+function stopControlHeartbeat() {
+  if (control.heartbeat) {
+    clearInterval(control.heartbeat);
+    control.heartbeat = null;
+  }
 }
 
 async function inject(path, body) {
   if (!control.enabled) return;
   try {
-    await apiPost(path + qs(), body || {});
+    await apiPost(path + qs(), body || {}, control.token);
   } catch (err) {
     $("control-note").textContent = `注入失败 ${err.message}`;
   }
 }
 
-function normCoords(event) {
-  const rect = $("preview").getBoundingClientRect();
-  return {
-    nx: Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1),
-    ny: Math.min(Math.max((event.clientY - rect.top) / rect.height, 0), 1),
+/* 连续手势:拖动全程走 gesture WS(DOWN/MOVE/UP 逐条发送),
+   单击=同点 start+end;MOVE 按 20Hz 客户端节流;连接在 end 后关闭。 */
+function startGesture(nx, ny) {
+  if (!control.token) return;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/api/v1/input/gesture${qs()}`);
+  const g = { ws, queue: [], lastSentAt: 0, done: false };
+  control.gesture = g;
+  g.queue.push({ token: control.token });
+  g.queue.push({ type: "start", nx, ny, seq: ++control.seq });
+  ws.onopen = () => {
+    for (const msg of g.queue) ws.send(JSON.stringify(msg));
+    g.queue = [];
   };
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.kind === "error") {
+      $("control-note").textContent = `手势失败(${msg.code}):${msg.message}`;
+      g.done = true;
+      if (control.gesture === g) control.gesture = null;
+      ws.close();
+    } else if (msg.kind === "ended") {
+      g.done = true;
+      if (control.gesture === g) control.gesture = null;
+      ws.close();
+    }
+  };
+  ws.onclose = () => {
+    if (control.gesture === g) control.gesture = null;
+  };
+}
+
+function moveGesture(nx, ny) {
+  const g = control.gesture;
+  if (!g || g.done) return;
+  const now = performance.now();
+  if (now - g.lastSentAt < 50) return; // 20Hz 客户端节流
+  g.lastSentAt = now;
+  if (g.ws.readyState === WebSocket.OPEN) {
+    g.ws.send(JSON.stringify({ type: "move", nx, ny, seq: ++control.seq }));
+  }
+}
+
+function endGesture() {
+  const g = control.gesture;
+  if (!g || g.done) return;
+  control.gesture = null;
+  const msg = { type: "end", seq: ++control.seq };
+  if (g.ws.readyState === WebSocket.OPEN) g.ws.send(JSON.stringify(msg));
+  else g.queue.push(msg); // 建连未完成:排队,onopen 依序发出
 }
 
 function setupControl() {
@@ -533,26 +664,34 @@ function setupControl() {
   $("btn-key-home").addEventListener("click", () => inject("/api/v1/input/key", { name: "home" }));
   $("btn-wake").addEventListener("click", () => inject("/api/v1/input/wake"));
 
-  const img = $("preview");
-  img.addEventListener("mousedown", (event) => {
-    if (!control.enabled || state.view !== "live") return;
-    control.dragStart = { ...normCoords(event), at: performance.now(), clientX: event.clientX, clientY: event.clientY };
+  // 指针事件挂在 stage:两种画面档(img/canvas)统一处理
+  const stage = $("stage");
+  stage.addEventListener("pointerdown", (event) => {
+    if (!control.enabled || state.view !== "live" || event.button !== 0) return;
+    const { nx, ny } = normCoords(event);
+    control.dragStart = {
+      nx, ny, moved: false,
+      clientX: event.clientX, clientY: event.clientY,
+    };
+    startGesture(nx, ny);
     event.preventDefault();
   });
-  window.addEventListener("mouseup", (event) => {
-    if (!control.enabled || !control.dragStart || state.view !== "live") return;
-    const start = control.dragStart;
-    control.dragStart = null;
-    const end = normCoords(event);
-    const movedPx = Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY);
-    if (movedPx < 12) {
-      inject("/api/v1/input/touch", { nx: end.nx, ny: end.ny });
-    } else {
-      inject("/api/v1/input/swipe", {
-        nx0: start.nx, ny0: start.ny, nx1: end.nx, ny1: end.ny,
-        duration_ms: Math.max(performance.now() - start.at, 120),
-      });
+  stage.addEventListener("pointermove", (event) => {
+    if (!control.dragStart) return;
+    const drag = control.dragStart;
+    if (!drag.moved) {
+      drag.moved =
+        Math.hypot(event.clientX - drag.clientX, event.clientY - drag.clientY) >= 12;
     }
+    if (drag.moved) {
+      const { nx, ny } = normCoords(event);
+      moveGesture(nx, ny);
+    }
+  });
+  window.addEventListener("pointerup", (event) => {
+    if (!control.dragStart) return;
+    control.dragStart = null;
+    if (state.view === "live") endGesture();
   });
 }
 
@@ -610,7 +749,7 @@ function connectPreview() {
             : frame.captured_at;
         setStreamNotice(
           frame.source === "scrcpy"
-            ? ""
+            ? state.videoNote || ""
             : `视频流不可用,截图轮询中${frame.fallback_reason ? ":" + frame.fallback_reason : ""}`,
         );
       }
@@ -632,9 +771,120 @@ function setStreamNotice(text) {
   el.classList.toggle("hidden", !text);
 }
 
-/* 滞后角标:实时视图下 >3s 无新帧提示(不遮画面) */
+/* ── H.264 直解档(web-preview 03):优先,失败回退 JPEG ── */
+
+let h264Player = null;
+let fittedVideo = { w: 0, h: 0 };
+const FIRST_FRAME_BUDGET_MS = 2000; // 直解首次出帧预算,超时继续 JPEG(规格 §用户旅程)
+
+async function connectVideo() {
+  let caps = null;
+  try {
+    const res = await fetch(`/api/v1/preview/capabilities${qs()}`);
+    caps = await res.json();
+  } catch {
+    caps = null;
+  }
+  if (!caps || !caps.h264_ws || typeof VideoDecoder === "undefined") {
+    setStreamNotice(
+      caps && caps.reason
+        ? `H.264 直解不可用,使用 JPEG 预览档:${caps.reason}`
+        : "浏览器不支持 WebCodecs,使用 JPEG 预览档",
+    );
+    connectPreview();
+    return;
+  }
+  // 先出 JPEG:首个 H.264 帧实际绘制后才切 Canvas 并释放 JPEG 连接;
+  // 预算从服务端 ready(通道已起)起算——通道冷启动不计入,超预算未出帧
+  // (如已起流通道要等下一关键帧)就继续 JPEG 并提示。
+  showCanvas(false);
+  fittedVideo = { w: 0, h: 0 };
+  state.videoNote = "";
+  let switched = false;
+  let budget = null;
+  const startBudget = () => {
+    if (switched || budget) return;
+    budget = setTimeout(() => {
+      if (switched) return;
+      closeVideo();
+      state.videoNote =
+        "H.264 直解 2 秒内未出帧,继续 JPEG 预览档(切设备或重连时重试)";
+      setStreamNotice(state.videoNote);
+    }, FIRST_FRAME_BUDGET_MS);
+  };
+  h264Player = MobileVideo.createH264Player({
+    canvas: $("video-canvas"),
+    onFrame: () => {
+      if (!switched) {
+        switched = true;
+        clearTimeout(budget);
+        closePreviewSocket();
+        showCanvas(true);
+        state.videoNote = "";
+      }
+      state.lastFrameAt = performance.now();
+      $("freshness").textContent = "H.264 直解";
+      setStreamNotice("");
+      const canvas = $("video-canvas");
+      if (canvas.width !== fittedVideo.w || canvas.height !== fittedVideo.h) {
+        fittedVideo = { w: canvas.width, h: canvas.height };
+        fitStage(); // 首帧与分辨率变化时按 canvas 尺寸重排
+      }
+    },
+    onSession: ({ w, h }) => {
+      // 检查冻结期间不覆盖快照的设备空间
+      if (state.view === "live" || !state.deviceSpace) {
+        state.deviceSpace = { w, h };
+      }
+    },
+    onState: (kind, message) => {
+      if (kind === "ready") {
+        startBudget();
+      } else if (kind === "error" || kind === "closed") {
+        clearTimeout(budget);
+        showCanvas(false);
+        h264Player = null;
+        state.videoNote = `H.264 直解中断,回退 JPEG 档${message ? ":" + message : ""}`;
+        setStreamNotice(state.videoNote);
+        connectPreview();
+      }
+    },
+  });
+  h264Player.open(qs());
+  // JPEG 档稍后接入:让直解 WS 先到服务端,通道冷启动时订阅能挂上首个
+  // 关键帧(出生订阅);直解失败/超预算时 JPEG 照常显示。
+  setTimeout(() => {
+    if (!switched) connectPreview();
+  }, 300);
+}
+
+function closeVideo() {
+  if (h264Player) {
+    h264Player.close();
+    h264Player = null;
+  }
+  showCanvas(false);
+}
+
+/* 按当前能力接入实时画面:直解已出帧就回 canvas,否则 JPEG 预览档 */
+function reconnectMedia() {
+  if (state.h264Active && h264Player && h264Player.active) {
+    closePreviewSocket();
+    showCanvas(true);
+    fitStage();
+  } else {
+    showCanvas(false);
+    connectPreview();
+  }
+}
+
+/* 滞后角标:JPEG 档按 10Hz 轮询,>3s 无新帧才算滞后;H.264 编码器只在
+   画面变化时出帧,静屏长时间无帧属正常,由 WS 错误/关闭触发回退提示。 */
 setInterval(() => {
-  const stale = state.view === "live" && performance.now() - state.lastFrameAt > 3000;
+  const stale =
+    state.view === "live" &&
+    !state.h264Active &&
+    performance.now() - state.lastFrameAt > 3000;
   $("stale-badge").classList.toggle("hidden", !stale);
 }, 1000);
 
@@ -826,12 +1076,15 @@ $("preview").addEventListener("click", pickAt);
    归一化坐标(getBoundingClientRect)与 overlay 定位都无 letterbox 偏移。
    触发:每帧 load(分辨率/宽高比变化)+ 窗口 resize。 */
 function fitStage() {
-  const img = $("preview");
   const pane = $("preview-pane");
-  if (!img.naturalWidth || !img.naturalHeight || !pane) return;
+  if (!pane) return;
+  const el = mediaEl();
+  const naturalW = mediaWidth(el);
+  const naturalH = mediaHeight(el);
+  if (!naturalW || !naturalH) return;
   const availW = pane.clientWidth - 2; // 减去 stage 边框
   const availH = Math.max(window.innerHeight - 230, 240);
-  const ratio = img.naturalWidth / img.naturalHeight;
+  const ratio = naturalW / naturalH;
   let w = availW;
   let h = w / ratio;
   if (h > availH) {
@@ -842,14 +1095,27 @@ function fitStage() {
   stage.style.width = `${Math.round(w)}px`;
   stage.style.height = `${Math.round(h)}px`;
   stage.style.maxHeight = "none";
-  img.style.width = "100%";
-  img.style.height = "100%";
+  el.style.width = "100%";
+  el.style.height = "100%";
 }
 
 $("preview").addEventListener("load", fitStage);
 window.addEventListener("resize", fitStage);
 setupTabs();
-window.addEventListener("pagehide", () => freezeControl.release()); // 卸载前释放冻结引用
+window.addEventListener("pagehide", () => {
+  freezeControl.release(); // 卸载前释放冻结引用
+  stopControlHeartbeat();
+  const token = control.token;
+  if (token) {
+    // 尽力释放控制权;失联路径上服务端也会在 5 秒后懒撤权
+    fetch(`/api/v1/control${qs()}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-viewer-control": token },
+      body: JSON.stringify({ enabled: false }),
+      keepalive: true,
+    }).catch(() => {});
+  }
+});
 refreshStatus();
 setInterval(refreshStatus, 3000);
-connectPreview();
+connectVideo();

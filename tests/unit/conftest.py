@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from mobile_auto import MobileConfig
 from mobile_auto.core.session import DeviceSession
-from mobile_auto.viewer.app import create_app
+from mobile_auto.viewer.app import _ChannelManager, create_app
 from mobile_auto.viewer.store import SnapshotStore
 
 
@@ -118,8 +118,6 @@ def client(tmp_path):
 
         raise StreamUnavailable("单测禁用视频流")
 
-    from mobile_auto.viewer.app import _ChannelManager
-
     manager = _ChannelManager(session, retry_init=0.05, channel_factory=no_channel)
     app = create_app(
         session, SnapshotStore(), preview_interval=0.1, channel_manager=manager
@@ -127,3 +125,91 @@ def client(tmp_path):
     yield TestClient(app), session, session._backend
     manager.shutdown()
     session.close()
+
+
+class FakeControlChannel:
+    """控制注入测试通道:记录 tap/swipe/手势分解/按键/亮屏。"""
+
+    def __init__(self, serial):
+        self.serial = serial
+        self.started = False
+        self.stopped = False
+        self.taps = []
+        self.swipes = []
+        self.keys = []
+        self.wakes = 0
+        self.touches = []  # 手势分解:(phase, x, y)
+
+    def start(self):
+        self.started = True
+
+    def healthy(self):
+        return self.started and not self.stopped
+
+    def screen_size(self):
+        return 1080, 2400
+
+    def tap(self, x, y):
+        self.taps.append((x, y))
+
+    def swipe(self, x0, y0, x1, y1, duration_s=0.3):
+        self.swipes.append((x0, y0, x1, y1, duration_s))
+
+    def touch_down(self, x, y):
+        self.touches.append(("down", x, y))
+
+    def touch_move(self, x, y):
+        self.touches.append(("move", x, y))
+
+    def touch_up(self, x, y):
+        self.touches.append(("up", x, y))
+
+    def press_key(self, name):
+        from mobile_auto.errors import InvalidTarget
+
+        if name not in ("back", "home"):
+            raise InvalidTarget(f"不支持的按键:{name!r};支持:back / home")
+        self.keys.append(name)
+
+    def wake(self):
+        self.wakes += 1
+
+    def stop(self):
+        self.stopped = True
+
+
+@pytest.fixture
+def control_env(tmp_path):
+    """单操作者控制测试环境:(http, session, channel, manager, app)。"""
+    channel = FakeControlChannel("SERIAL1")
+    config = MobileConfig(device_serial="SERIAL1", assets_dir=tmp_path / "assets")
+    session = DeviceSession(
+        config,
+        backend_factory=lambda: ViewerBackend(),
+        device_enumerator=lambda: {"SERIAL1": "device"},
+        lease_factory=lambda s: NullLease(s),
+    )
+    session.start()
+    session.release_lease()
+    manager = _ChannelManager(
+        session, retry_init=0.05, channel_factory=lambda serial: channel
+    )
+    app = create_app(
+        session, SnapshotStore(), preview_interval=0.05, channel_manager=manager
+    )
+    yield TestClient(app), session, channel, manager, app
+    manager.shutdown()
+    session.close()
+
+
+def acquire(http):
+    """领用控制权;返回操作者凭据。"""
+    res = http.post("/api/v1/control", json={"enabled": True})
+    assert res.status_code == 200
+    token = res.json()["token"]
+    assert token
+    return token
+
+
+def head(token):
+    return {"x-viewer-control": token}

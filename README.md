@@ -100,7 +100,15 @@ tests/
   scrcpy 优先、连续 3 次失败降级 u2 60s),与通道后端正交。注意:upstream 后端
   的取证截图(capture_png)分辨率=流分辨率(max_size 默认 1080);需全分辨率取证
   用 `screenshot_source="u2"`(详见 docs/prd-auto.md §8.5)。
-- **网页直接控制**默认关闭,`POST /api/v1/control` 显式启用;注入经租约门控。
+- **网页直接控制**(单操作者凭据制):`POST /api/v1/control` 按设备领用控制权
+  并发放内存凭据,注入须经 `X-Viewer-Control` 头携带(无凭据旧客户端明确拒绝);
+  约 1s 心跳(`/api/v1/control/heartbeat`)续期,失联 5s 懒撤权;他人持有时领用
+  409、不抢占;注入经租约门控。拖动类连续操作走 `WS /api/v1/input/gesture`
+  (严格同源,租约跨消息持有,断连尽力 UP)。
+- **浏览器直解视频档**(可选,H.264):`GET /api/v1/preview/capabilities` 探测
+  (`stream_backend=upstream` 且上游 server 资产在位时 `h264_ws=true`);
+  `WS /api/v1/preview/video` 下发 27B 二进制封装的 H.264 Annex B 码流,前端
+  WebCodecs 直解;不可用时前端自动回退 JPEG 预览档(原 `/api/v1/preview` 不变)。
 - **viewer 数据一致前提**:serve/--debug-viewer 与 pytest 运行共用同一 `--mobile-config`
   (artifacts 目录一致),占用/运行态/证据才能互相可见。
 - 许可证:上游 scrcpy server v5.0.1 为 Apache-2.0(随包,PROVENANCE.md 登记);

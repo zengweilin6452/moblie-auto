@@ -172,3 +172,39 @@ def test_two_clients_share_channel_and_idle_requires_both_gone():
     time.sleep(0.4)  # 全部断开:停止
     assert channel.stop_calls == 1
     manager.shutdown()
+
+
+class WarmingChannel(FakeChannel):
+    """预热通道:server 已起、首个关键帧未到(has_frame=False 且取帧抛错)。"""
+
+    def __init__(self, serial):
+        super().__init__(serial)
+        self.has_frame = False
+
+    def latest_frame(self):
+        if not self.has_frame:
+            raise StreamUnavailable("视频流尚无解码帧")
+        return FAKE_JPEG, 150, 200
+
+
+def test_warmup_channel_not_recycled_and_recovers():
+    """真机回归:静态画面下首帧未到时轮询不得回收通道(否则反复重建 server)。"""
+    channel = WarmingChannel("SERIAL1")
+    app, _, manager = make_app(channel)
+    from fastapi.testclient import TestClient
+
+    with TestClient(app).websocket_connect("/api/v1/preview") as ws:
+        first = ws.receive_json()
+        assert first["source"] == "u2-fallback"
+        assert channel.stop_calls == 0  # 预热不回收通道
+        channel.has_frame = True  # 首个关键帧到达
+        deadline = time.monotonic() + 2
+        source = None
+        while time.monotonic() < deadline:
+            frame = ws.receive_json()
+            if frame.get("source") == "scrcpy":
+                source = "scrcpy"
+                break
+        assert channel.stop_calls == 0  # 全程未回收(仅 shutdown 才停)
+    manager.shutdown()
+    assert source == "scrcpy", "预热结束后未切回 scrcpy 画面"

@@ -298,9 +298,15 @@ def test_viewer_rotated_injection_hits_expected_pixels_and_meta(tmp_path):
     journal = Journal(tmp_path / "viewer" / "SERIAL1", session.session_id)
     session.set_journal(journal)
     try:
-        http.post("/api/v1/control", json={"enabled": True})
+        token = http.post("/api/v1/control", json={"enabled": True}).json()["token"]
+        headers = {"x-viewer-control": token}
         backend.screen = (2400, 1080)  # 设备旋转:通道基准仍旧
-        assert http.post("/api/v1/input/touch", json={"nx": 0.5, "ny": 0.5}).status_code == 200
+        assert (
+            http.post(
+                "/api/v1/input/touch", json={"nx": 0.5, "ny": 0.5}, headers=headers
+            ).status_code
+            == 200
+        )
         assert channel.taps == [(1200, 540)]
         assert channel.refresh_calls == 1
 
@@ -328,11 +334,12 @@ def test_viewer_rotated_injection_hits_expected_pixels_and_meta(tmp_path):
 def test_viewer_swipe_uses_refreshed_basis(tmp_path):
     http, session, channel, backend, manager = viewer_env(tmp_path)
     try:
-        http.post("/api/v1/control", json={"enabled": True})
+        token = http.post("/api/v1/control", json={"enabled": True}).json()["token"]
         backend.screen = (2400, 1080)
         res = http.post(
             "/api/v1/input/swipe",
             json={"nx0": 0.5, "ny0": 0.8, "nx1": 0.5, "ny1": 0.2, "duration_ms": 250},
+            headers={"x-viewer-control": token},
         )
         assert res.status_code == 200
         assert channel.swipes == [(1200, 864, 1200, 216, 0.25)]

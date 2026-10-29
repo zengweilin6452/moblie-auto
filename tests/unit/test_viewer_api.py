@@ -99,6 +99,38 @@ def test_static_index_served(client):
     assert "mobile-auto" in res.text
 
 
+@pytest.mark.parametrize("path", ["/", "/index.html", "/app.js", "/video_player.js", "/styles.css"])
+def test_static_assets_require_cache_revalidation(client, path):
+    http, _, _ = client
+    response = http.get(path)
+    assert response.status_code == 200
+    assert response.content
+    assert response.headers.get("cache-control") == "no-cache"
+    head = http.head(path)
+    assert head.status_code == 200
+    assert head.headers.get("cache-control") == "no-cache"
+    cached = http.get(path, headers={"if-none-match": response.headers["etag"]})
+    assert cached.status_code == 304
+    assert cached.headers.get("cache-control") == "no-cache"
+
+
+def test_static_update_invalidates_cached_asset(client, tmp_path, monkeypatch):
+    import mobile_auto.viewer.app as viewer_app
+
+    asset = tmp_path / "app.js"
+    asset.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(viewer_app, "_STATIC_DIR", tmp_path)
+    with type(client[0])(viewer_app.create_app(client[1])) as http:
+        old = http.get("/app.js")
+        assert old.text == "old"
+        asset.write_text("new-version", encoding="utf-8")
+        updated = http.get("/app.js", headers={"if-none-match": old.headers["etag"]})
+        assert updated.status_code == 200
+        assert updated.text == "new-version"
+        assert updated.headers["etag"] != old.headers["etag"]
+        assert updated.headers.get("cache-control") == "no-cache"
+
+
 def test_preview_ws_pushes_frames(client):
     http, session, _ = client
     with http.websocket_connect("/api/v1/preview") as ws:

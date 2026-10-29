@@ -66,6 +66,11 @@ _MAX_WS_CLIENTS_PER_DEVICE = 4  # 同一设备的预览连接上限(按设备计
 _CAPTURE_TIMEOUT_SECONDS = 10.0
 _TREE_INTERVAL_LIMIT_SECONDS = 1.0  # 截图与树采集间隔超限判定(快照不一致)
 
+_CONTROL_TOKEN_TTL_SECONDS = 5.0  # 操作者心跳失联撤权时限
+_GESTURE_IDLE_TIMEOUT_SECONDS = 2.0  # 手势消息间隔上限,超时尽力 UP
+_HELLO_TIMEOUT_SECONDS = 5.0  # WS 建连后首条消息时限
+_U2_CONTROL_HOLDOFF_SECONDS = 3.0  # 预览回退 u2 后的只读时长
+
 _STATIC_DIR = Path(__file__).parent / "static"
 
 # 验证查询支持的定位方式:五种原生 + IMAGE(Locator 不含 CSS)
@@ -278,6 +283,15 @@ def _probe_leases(serials: list[str]) -> list[dict]:
     return items
 
 
+class _ViewerStaticFiles(StaticFiles):
+    """固定 URL 的前端资源每次使用前重新验证,保留 ETag/304。"""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["cache-control"] = "no-cache"
+        return response
+
+
 class _ChannelManager(ServerSupervisor):
     """viewer 进程内的 scrcpy 通道监督器:启动经租约短事务,预览客户端即用户。
 
@@ -298,6 +312,8 @@ class _ChannelManager(ServerSupervisor):
     ) -> None:
         self._session = session
         self._channel_factory = channel_factory  # None → 真实 ScrcpyChannel
+        self._pending_attach = None  # 视频直解:start 前订阅(捕获首个关键帧)
+        self._preview_source: tuple[str | None, float] = (None, 0.0)
         super().__init__(
             starter=self._start_via_lease,
             idle_stop=idle_stop,
@@ -310,11 +326,34 @@ class _ChannelManager(ServerSupervisor):
         """当前预览客户端数;用于每设备连接上限判定。"""
         return self.user_count
 
+    def note_preview_source(self, source: str) -> None:
+        """记录最近一次预览帧来源(u2 回退期间控制须只读)。"""
+        self._preview_source = (source, time.monotonic())
+
+    def preview_source(self) -> tuple[str | None, float]:
+        return self._preview_source
+
     def client_connected(self) -> None:
         self.acquire_user()
 
     def client_disconnected(self) -> None:
         self.release_user()
+
+    def get_for_video(self, attach):
+        """重建通道并在 start 前订阅,保证新客户端收到启动关键帧。
+
+        通道只缓存 config/session,没有可回放的完整解码链;部分设备
+        后续不再发 IDR,不能让新订阅无限等待。重建会让同设备旧视频
+        客户端回退 JPEG。停止与启动共用启动锁,避免 JPEG 轮询抢先起流。
+        """
+        with self._start_lock:
+            with self._lock:
+                self._stop_channel_locked()
+            self._pending_attach = attach
+            try:
+                return self._start_channel()
+            finally:
+                self._pending_attach = None
 
     def _start_via_lease(self) -> ScrcpyChannel:
         """短事务启动:READY 时获取租约、启动后释放;本进程已持(LEASED)
@@ -334,6 +373,8 @@ class _ChannelManager(ServerSupervisor):
                 channel_factory_override=self._channel_factory,
             )
             channel = factory(self._session.serial)
+            if self._pending_attach is not None:
+                self._pending_attach(channel)  # start 前订阅:捕获首个关键帧
             channel.start()
             return channel
         finally:
@@ -494,6 +535,28 @@ class _DeviceRegistry:
                     entry.session.journal.close()
 
 
+def _require_live_picture(manager, channel, *, require_picture: bool = True) -> None:
+    """控制前的新鲜度门控:通道存活,且(默认)预览不是 u2 回退画面。
+
+    规格以"连续 3 秒未收到新编码包"判定滞后;真机实测该编码器静屏时
+    完全不出包(连续滚动 13 秒共 183 帧,静置期间 0 帧),按包到达计时
+    会把静屏误判为滞后,操作者再也无法点按解冻。静屏时最后一帧就是
+    当前画面,故滞后改以"操作者看到的是哪种画面"判定:最近一次预览帧
+    仍是 u2 回退(且不超过 3 秒)时只读,等 scrcpy 画面恢复。没有预览
+    客户端时没有可被误导的画面,不额外限制。
+
+    require_picture=False 只用于亮屏与手势 UP:前者不依赖画面坐标、是
+    预热期唯一可用的恢复动作;后者必须发出,否则设备停在按住状态。
+    """
+    if not channel.healthy():
+        raise StreamUnavailable("视频流通道不可用,无法注入")
+    if not require_picture:
+        return
+    source, at = manager.preview_source()
+    if source == "u2-fallback" and time.monotonic() - at <= _U2_CONTROL_HOLDOFF_SECONDS:
+        raise StreamUnavailable("画面当前为 u2 回退,只读;待 scrcpy 画面恢复")
+
+
 def _build_stream_frame(
     manager: _ChannelManager, session: DeviceSession, store: SnapshotStore
 ) -> dict:
@@ -520,8 +583,12 @@ def _build_stream_frame(
                 jpeg, width, height = channel.latest_frame()
                 screen_w, screen_h = channel.screen_size()
             except StreamUnavailable as exc:
-                manager.invalidate(str(exc))
+                # 预热期(server 已起、首个关键帧未到)不是通道损坏:本轮回退
+                # u2 但不回收通道,否则每次轮询都会重建 server 形成抖动死循环。
+                if getattr(channel, "has_frame", True):
+                    manager.invalidate(str(exc))
             else:
+                manager.note_preview_source("scrcpy")
                 return {
                     "kind": "frame",
                     "source": "scrcpy",
@@ -537,6 +604,7 @@ def _build_stream_frame(
     if frame.get("kind") == "frame":
         frame["source"] = "u2-fallback"
         frame["fallback_reason"] = manager.last_error
+        manager.note_preview_source("u2-fallback")
     return frame
 
 
@@ -565,9 +633,12 @@ def create_app(
     )
     app.state.preview_interval = preview_interval
     app.state.stream_interval = stream_interval
-    # 直接控制(P1 工单 04):显式启用,默认关闭
-    app.state.control_enabled = False
-    app.state.last_inject = 0.0
+    # 单操作者控制权(web-preview 04):serial → 内存凭据,失联 5s 懒过期
+    app.state.control_owners: dict[str, str] = {}
+    app.state.control_seen: dict[str, float] = {}
+    app.state.control_lock = threading.Lock()
+    app.state.gesture_slots: set[str] = set()  # 每设备同时一个手势会话
+    app.state.last_inject: dict[str, float] = {}  # 注入节流,按设备隔离
 
     def _resolve(device_param: str | None):
         return app.state.registry.resolve(device_param)
@@ -648,6 +719,37 @@ def create_app(
                 "can_capture": session is not None and session.state == SessionState.READY,
                 "snapshots": len(store.snapshot_ids()),
             },
+        }
+
+    @app.get("/api/v1/preview/capabilities")
+    async def preview_capabilities(request: Request, device: str | None = None):
+        """前端能力探测(web-preview 02):浏览器直解 H.264 是否可用。
+
+        只读判定,不启动设备 server:stream_backend 为 upstream 且上游
+        scrcpy server 资产在位才报告 h264_ws;否则给出原因供前端降级
+        到 JPEG 预览档。
+        """
+        registry: _DeviceRegistry = app.state.registry
+        serial = device or registry.default_serial()
+        h264 = False
+        reason: str | None = None
+        if not serial:
+            reason = "无可用设备;请先连接设备或配置 device_serial"
+        elif registry.config.stream_backend != "upstream":
+            reason = f"当前 stream_backend={registry.config.stream_backend},不支持浏览器直解"
+        else:
+            try:
+                from ..stream.upstream import upstream_asset
+
+                upstream_asset()
+                h264 = True
+            except StreamUnavailable as exc:
+                reason = str(exc)
+        return {
+            "device": serial,
+            "h264_ws": h264,
+            "reason": reason,
+            "request_id": request.state.request_id,
         }
 
     # ── 失败证据浏览(P2 工单 08;只读,限 artifacts 内)─────
@@ -1005,12 +1107,12 @@ def create_app(
             })
             await ws.close(code=4404)
             return
+        if manager.clients >= _MAX_WS_CLIENTS_PER_DEVICE:
+            await ws.close(code=4429)
+            return
+        manager.client_connected()
         app.state.ws_clients += 1
         try:
-            if manager.clients >= _MAX_WS_CLIENTS_PER_DEVICE:
-                await ws.close(code=4429)
-                return
-            manager.client_connected()
             await ws.accept()
             sender = _PreviewSender(ws)
             try:
@@ -1032,29 +1134,121 @@ def create_app(
             app.state.ws_clients -= 1
             manager.client_disconnected()
 
-    # ── 直接控制(P1 工单 04;显式启用)────────────────────────
+    # ── 单操作者控制(web-preview 04/05;凭据制)──────────────
 
-    _INJECT_MIN_INTERVAL_SECONDS = 0.05  # 注入节流
+    _INJECT_MIN_INTERVAL_SECONDS = 0.05  # 注入节流(按设备)
+
+    def _expire_control_locked(now: float) -> None:
+        """懒过期:超过 TTL 无心跳的持有者就地撤权;须持 control_lock。"""
+        stale = [
+            serial
+            for serial, seen in app.state.control_seen.items()
+            if now - seen > _CONTROL_TOKEN_TTL_SECONDS
+        ]
+        for serial in stale:
+            app.state.control_owners.pop(serial, None)
+            app.state.control_seen.pop(serial, None)
+            app.state.gesture_slots.discard(serial)
+
+    def _device_serial_for(device_param: str | None) -> str | None:
+        return device_param or app.state.registry.default_serial()
 
     @app.post("/api/v1/control")
-    async def set_control_mode(request: Request):
+    async def control_ownership(request: Request, device: str | None = None):
+        """领用/释放设备操作者控制权;凭据仅在响应体发放,页面内存保存。
+
+        旧客户端(不带凭据直接注入)由 _gate_control 明确拒绝;他人持有
+        时领用返回 409(不抢占);持证重复启用幂等续期。
+        """
         body = await request.json()
-        enabled = bool(body.get("enabled"))
-        app.state.control_enabled = enabled
+        serial = _device_serial_for(device)
+        token = request.headers.get("x-viewer-control")
+        now = time.monotonic()
+        with app.state.control_lock:
+            _expire_control_locked(now)
+            owner = app.state.control_owners.get(serial) if serial else None
+            if body.get("enabled"):
+                if not serial:
+                    return error_envelope(request, 400, "no-device", "未指定设备且无默认设备")
+                if owner is not None:
+                    if token and token == owner:
+                        app.state.control_seen[serial] = now
+                        return {
+                            "ok": True,
+                            "token": owner,
+                            "ttl_seconds": _CONTROL_TOKEN_TTL_SECONDS,
+                            "note": "已持有控制权(幂等续期)",
+                        }
+                    return error_envelope(
+                        request, 409, "control-busy", "其他操作者持有该设备的控制权"
+                    )
+                new_token = uuid.uuid4().hex
+                app.state.control_owners[serial] = new_token
+                app.state.control_seen[serial] = now
+                return {
+                    "ok": True,
+                    "token": new_token,
+                    "ttl_seconds": _CONTROL_TOKEN_TTL_SECONDS,
+                    "note": "控制权已领取;须约 1 秒一次心跳续期,失联 5 秒自动释放",
+                }
+            if owner is None:
+                return {"ok": True, "note": "该设备无控制权持有者"}
+            if not token or token != owner:
+                return error_envelope(request, 403, "forbidden", "凭据不符,不能释放他人控制权")
+            app.state.control_owners.pop(serial, None)
+            app.state.control_seen.pop(serial, None)
+            return {"ok": True, "note": "控制权已释放"}
+
+    @app.post("/api/v1/control/heartbeat")
+    async def control_heartbeat(request: Request, device: str | None = None):
+        """操作者心跳:约 1 秒一次续期;停止心跳超过 TTL 服务端懒撤权。"""
+        serial = _device_serial_for(device)
+        token = request.headers.get("x-viewer-control")
+        now = time.monotonic()
+        with app.state.control_lock:
+            _expire_control_locked(now)
+            owner = app.state.control_owners.get(serial) if serial else None
+            if not token or owner is None or token != owner:
+                return error_envelope(
+                    request,
+                    403,
+                    "forbidden",
+                    "未持有该设备的控制权(已被释放或凭据不符)",
+                )
+            app.state.control_seen[serial] = now
         return {
-            "enabled": enabled,
+            "ok": True,
+            "ttl_seconds": _CONTROL_TOKEN_TTL_SECONDS,
             "request_id": request.state.request_id,
-            "note": "直接控制已启用" if enabled else "直接控制已关闭",
         }
 
-    def _gate_control(request: Request) -> JSONResponse | None:
-        """控制模式与节流门控;通过返回 None。"""
-        if not app.state.control_enabled:
-            return error_envelope(request, 400, "control-disabled", "直接控制未启用")
+    def _gate_control(request: Request, serial: str | None) -> JSONResponse | None:
+        """操作者凭据与节流门控;通过返回 None。
+
+        无凭据旧客户端在此明确拒绝(升级契约);节流按设备隔离。
+        """
+        token = request.headers.get("x-viewer-control")
+        if not serial or not token:
+            return error_envelope(
+                request,
+                400,
+                "control-credential-required",
+                "缺少操作者凭据:先 POST /api/v1/control 领取,再经 X-Viewer-Control 头携带",
+            )
         now = time.monotonic()
-        if now - app.state.last_inject < _INJECT_MIN_INTERVAL_SECONDS:
+        with app.state.control_lock:
+            _expire_control_locked(now)
+            owner = app.state.control_owners.get(serial)
+            if owner is None:
+                return error_envelope(
+                    request, 400, "control-disabled", "该设备当前无操作者持有控制权"
+                )
+            if token != owner:
+                return error_envelope(request, 403, "forbidden", "控制权凭据不符")
+            app.state.control_seen[serial] = now
+        if now - app.state.last_inject.get(serial, 0.0) < _INJECT_MIN_INTERVAL_SECONDS:
             return error_envelope(request, 429, "throttled", "注入过于频繁(≥50ms 间隔)")
-        app.state.last_inject = now
+        app.state.last_inject[serial] = now
         return None
 
     def _normalized(body: dict, names: tuple[str, ...]) -> list[float] | None:
@@ -1079,6 +1273,7 @@ def create_app(
         op,
         extra=None,
         basis=False,
+        require_picture=True,
     ):
         """短事务注入:租约(409 门控)→ 队列串行执行 → 释放。
 
@@ -1090,7 +1285,8 @@ def create_app(
         坐标类操作在队列任务内先经 session.ensure_coordinate_basis 保鲜
         基准(实时 wm size / 刷新均为阻塞调用,不能发生在事件循环线程),
         再取 channel.screen_size() 换算归一化坐标;basis=True 时把本次
-        实际基准并入 journal 行。
+        实际基准并入 journal 行。require_picture=False 仅亮屏使用(见
+        _require_live_picture)。
         """
         journal = session.journal
         started = time.monotonic()
@@ -1099,8 +1295,9 @@ def create_app(
         try:
             with _LeaseGuard(session) as guard:
                 channel = manager.get()
-                if channel is None or not channel.healthy():
+                if channel is None:
                     raise StreamUnavailable("视频流通道不可用,无法注入")
+                _require_live_picture(manager, channel, require_picture=require_picture)
 
                 def run(backend):
                     try:
@@ -1155,7 +1352,7 @@ def create_app(
     @app.post("/api/v1/input/touch")
     async def input_touch(request: Request, device: str | None = None):
         body = await request.json()
-        gate = _gate_control(request)
+        gate = _gate_control(request, _device_serial_for(device))
         if gate is not None:
             return gate
         values = _normalized(body, ("nx", "ny"))
@@ -1188,7 +1385,7 @@ def create_app(
     @app.post("/api/v1/input/swipe")
     async def input_swipe(request: Request, device: str | None = None):
         body = await request.json()
-        gate = _gate_control(request)
+        gate = _gate_control(request, _device_serial_for(device))
         if gate is not None:
             return gate
         values = _normalized(body, ("nx0", "ny0", "nx1", "ny1"))
@@ -1234,7 +1431,7 @@ def create_app(
     @app.post("/api/v1/input/key")
     async def input_key(request: Request, device: str | None = None):
         body = await request.json() if await request.body() else {}
-        gate = _gate_control(request)
+        gate = _gate_control(request, _device_serial_for(device))
         if gate is not None:
             return gate
         name = str(body.get("name") or "")
@@ -1255,7 +1452,7 @@ def create_app(
 
     @app.post("/api/v1/input/wake")
     async def input_wake(request: Request, device: str | None = None):
-        gate = _gate_control(request)
+        gate = _gate_control(request, _device_serial_for(device))
         if gate is not None:
             return gate
         _, session, manager = _resolve(device)
@@ -1266,14 +1463,396 @@ def create_app(
                 manager,
                 lambda channel, _backend: channel.wake(),
                 op="viewer.wake",
+                require_picture=False,
             )
         except MobileAutoError as exc:
             status = _ERROR_STATUS.get(type(exc), 400)
             return error_envelope(request, status, type(exc).__name__, str(exc))
         return {"ok": True, "request_id": request.state.request_id}
 
+    # ── 浏览器直解视频 WS(web-preview 02)────────────────────
+
+    @app.websocket("/api/v1/preview/video")
+    async def preview_video(ws: WebSocket):
+        """H.264 二进制信道:严格同源 → hello → 编码包中继。
+
+        线格式见 viewer/videostream.py(27B 头 + 载荷);连接仅下行,
+        慢消费者由订阅缓冲溢出判定(状态 JSON 后断开,前端重连重建
+        关键帧同步),发送超时判定失联。
+        """
+        from .videostream import encode_relay_packet
+
+        if not _origin_strict(ws.headers.get("origin"), ws.headers.get("host", "")):
+            await ws.close(code=4403)
+            return
+        try:
+            _, session, manager = _resolve(ws.query_params.get("device"))
+        except MobileAutoError as exc:
+            await ws.accept()
+            await ws.send_json({
+                "kind": "error",
+                "code": "device-unavailable",
+                "message": str(exc),
+            })
+            await ws.close(code=4404)
+            return
+        if manager.clients >= _MAX_WS_CLIENTS_PER_DEVICE:
+            await ws.close(code=4429)
+            return
+        manager.client_connected()
+        app.state.ws_clients += 1
+        sub = None
+        try:
+            await ws.accept()
+            try:
+                hello = await asyncio.wait_for(
+                    ws.receive_json(), timeout=_HELLO_TIMEOUT_SECONDS
+                )
+            except (WebSocketDisconnect, RuntimeError, TimeoutError, KeyError, ValueError):
+                return
+            if not isinstance(hello, dict) or hello.get("proto") != 1:
+                await ws.send_json({
+                    "kind": "error",
+                    "code": "bad-hello",
+                    "message": '首条消息须为 {"proto":1}',
+                })
+                await ws.close(code=4400)
+                return
+            if session.config.stream_backend != "upstream":
+                await ws.send_json({
+                    "kind": "error",
+                    "code": "unsupported",
+                    "message": "当前 stream_backend 不支持浏览器直解,回退 JPEG 预览档",
+                })
+                await ws.close(code=4400)
+                return
+
+            subs: list = []
+
+            def attach(channel):
+                subs.append(channel.subscribe_encoded())
+
+            try:
+                channel = await asyncio.to_thread(manager.get_for_video, attach)
+            except MobileAutoError as exc:
+                await ws.send_json({
+                    "kind": "error",
+                    "code": type(exc).__name__,
+                    "message": str(exc),
+                })
+                await ws.close(code=4503)
+                return
+            sub = subs[0]
+            generation = channel.generation
+            await ws.send_json({"kind": "ready", "generation": generation})
+            sequence = 0
+            while True:
+                packet = await asyncio.to_thread(sub.take, 0.5)
+                if sub.overflowed:
+                    await ws.send_json({
+                        "kind": "error",
+                        "code": "overflow",
+                        "message": "消费过慢,订阅已丢弃;请重连重建关键帧同步",
+                    })
+                    await ws.close(code=4429)
+                    return
+                if not channel.healthy():
+                    await ws.send_json({
+                        "kind": "error",
+                        "code": "channel-unhealthy",
+                        "message": "视频通道不健康,请重连",
+                    })
+                    await ws.close(code=4503)
+                    return
+                if packet is None:
+                    continue
+                message = encode_relay_packet(
+                    packet, generation=generation, sequence=sequence
+                )
+                sequence += 1
+                await asyncio.wait_for(ws.send_bytes(message), timeout=5.0)
+        except (WebSocketDisconnect, RuntimeError, TimeoutError, KeyError, ValueError):
+            pass  # 断连/发送超时:槽位在 finally 释放,前端自动重连
+        finally:
+            app.state.ws_clients -= 1
+            if sub is not None:
+                sub.close()
+            try:
+                manager.client_disconnected()
+            except Exception:
+                pass
+
+    # ── 连续手势 WS(web-preview 05)──────────────────────────
+
+    @app.websocket("/api/v1/input/gesture")
+    async def input_gesture(ws: WebSocket):
+        """连续手势信道:严格同源 → 凭据认证 → 每设备一个手势会话。
+
+        DOWN 取设备租约(被他人持有则如实报错),MOVE/UP 逐条经设备
+        队列串行;2s 无消息或断连尽力 UP;提交超时结局未知不补发,
+        如实上报后终止;租约经 _LeaseGuard 等在途任务结束后释放。
+        """
+        if not _origin_strict(ws.headers.get("origin"), ws.headers.get("host", "")):
+            await ws.close(code=4403)
+            return
+        try:
+            _, session, manager = _resolve(ws.query_params.get("device"))
+        except MobileAutoError as exc:
+            await ws.accept()
+            await ws.send_json({
+                "kind": "error",
+                "code": "device-unavailable",
+                "message": str(exc),
+            })
+            await ws.close(code=4404)
+            return
+        serial = session.serial
+        await ws.accept()
+        try:
+            hello = await asyncio.wait_for(
+                ws.receive_json(), timeout=_HELLO_TIMEOUT_SECONDS
+            )
+        except (WebSocketDisconnect, RuntimeError, TimeoutError, KeyError, ValueError):
+            return
+        token = hello.get("token") if isinstance(hello, dict) else None
+        now = time.monotonic()
+        with app.state.control_lock:
+            _expire_control_locked(now)
+            owner = app.state.control_owners.get(serial)
+        if not token or owner is None or token != owner:
+            await ws.send_json({
+                "kind": "error",
+                "code": "forbidden",
+                "message": "手势须携带当前操作者凭据(先 POST /api/v1/control 领取)",
+            })
+            await ws.close(code=4403)
+            return
+        with app.state.control_lock:
+            if serial in app.state.gesture_slots:
+                busy = True
+            else:
+                busy = False
+                app.state.gesture_slots.add(serial)
+        if busy:
+            await ws.send_json({
+                "kind": "error",
+                "code": "gesture-busy",
+                "message": "该设备已有进行中的手势",
+            })
+            await ws.close(code=4429)
+            return
+
+        guard: _LeaseGuard | None = None
+        down = False
+        last_seq = 0
+        last_point = (0.0, 0.0)
+
+        def _record(phase_name, started, outcome, *, info=None, error_type=None):
+            journal = session.journal
+            if journal is None:
+                return
+            extra = {"phase": phase_name, "seq": last_seq}
+            if info:
+                extra.update(info)
+            journal.record(
+                f"viewer.gesture.{phase_name}",
+                duration_ms=(time.monotonic() - started) * 1000,
+                outcome=outcome,
+                error_type=error_type,
+                extra=extra,
+            )
+
+        def _touch_run(phase_name, nx, ny):
+            def run(backend):
+                channel = manager.get()
+                if channel is None:
+                    raise StreamUnavailable("视频流通道不可用,手势中止")
+                # UP 是清理动作:画面回退时也必须发出,否则设备停在按住状态
+                _require_live_picture(
+                    manager, channel, require_picture=phase_name != "up"
+                )
+                if phase_name == "down":
+                    # DOWN 时刻保鲜坐标基准;MOVE/UP 沿用同一手势内的换算
+                    session.ensure_coordinate_basis(backend, channel)
+                w, h = channel.screen_size()
+                x, y = int(nx * w), int(ny * h)
+                if phase_name == "down":
+                    channel.touch_down(x, y)
+                elif phase_name == "move":
+                    channel.touch_move(x, y)
+                else:
+                    channel.touch_up(x, y)
+                name = getattr(channel, "channel_name", None)
+                if isinstance(name, str) and name:
+                    session._note_injection_channel(name)
+                return {"point": [nx, ny], "pixel": [x, y], "size": [int(w), int(h)]}
+
+            return run
+
+        def _submit_step(phase_name, nx, ny):
+            """一次手势事件:经设备队列串行;租约跨事件持有,不短事务释放。"""
+            session.begin_operation()
+            started = time.monotonic()
+            future = session.submit(_touch_run(phase_name, nx, ny))
+            try:
+                info = future.result(timeout=10.0)
+            except TimeoutError as exc:
+                session.mark_cancelled(future)
+                if not future.done() and guard is not None:
+                    guard.hand_off_to(future)  # 运行中无法中断:租约保留至其结束
+                _record(phase_name, started, "error", error_type="timeout")
+                raise DeviceUnavailable(
+                    f"手势 {phase_name} 提交超时(结局未知,不补发)"
+                ) from exc
+            except Exception:
+                _record(phase_name, started, "error", error_type="error")
+                raise
+            _record(phase_name, started, "ok", info=info)
+            return info
+
+        def _start(nx, ny):
+            nonlocal guard, down
+            session.acquire_lease()  # 被他人持有 → DeviceBusy,如实上报
+            guard = _LeaseGuard(session)
+            try:
+                _submit_step("down", nx, ny)
+            except Exception:
+                guard.release()  # DOWN 未确立:立即释放,不留悬挂租约
+                guard = None
+                raise
+            down = True
+
+        async def _cleanup():
+            """尽力 UP 后释放:结局未知/断连/超时的共同清理路径。"""
+            nonlocal down, guard
+            if down and session.state == SessionState.LEASED:
+                try:
+                    await asyncio.to_thread(_submit_step, "up", *last_point)
+                except Exception:
+                    pass  # 尽力而为;UP 结局未知不再补发
+            down = False
+            if guard is not None:
+                guard.release()
+                guard = None
+
+        try:
+            while True:
+                try:
+                    message = await asyncio.wait_for(
+                        ws.receive_json(), timeout=_GESTURE_IDLE_TIMEOUT_SECONDS
+                    )
+                except TimeoutError:
+                    await _cleanup()
+                    await ws.send_json({"kind": "ended", "reason": "idle-timeout"})
+                    break
+                if not isinstance(message, dict):
+                    await ws.send_json({
+                        "kind": "error",
+                        "code": "bad-message",
+                        "message": "手势消息须为 JSON 对象",
+                    })
+                    await ws.close(code=4400)
+                    break
+                mtype = message.get("type")
+                seq = message.get("seq")
+                if isinstance(seq, bool) or not isinstance(seq, int) or seq <= last_seq:
+                    await ws.send_json({
+                        "kind": "error",
+                        "code": "bad-seq",
+                        "message": "seq 必须单调递增",
+                    })
+                    await ws.close(code=4400)
+                    break
+                last_seq = seq
+                if mtype in ("start", "move"):
+                    values = _normalized(message, ("nx", "ny"))
+                    if values is None:
+                        await ws.send_json({
+                            "kind": "error",
+                            "code": "invalid-input",
+                            "message": "nx/ny 必须是数值",
+                        })
+                        await ws.close(code=4400)
+                        break
+                    if mtype == "start":
+                        if down:
+                            await ws.send_json({
+                                "kind": "error",
+                                "code": "bad-state",
+                                "message": "手势已在进行中,先 end/cancel",
+                            })
+                            await ws.close(code=4400)
+                            break
+                        try:
+                            await asyncio.to_thread(_start, *values)
+                        except MobileAutoError as exc:
+                            await ws.send_json({
+                                "kind": "error",
+                                "code": type(exc).__name__,
+                                "message": str(exc),
+                            })
+                            await ws.close(code=4503)
+                            break
+                        last_point = values
+                        await ws.send_json({"kind": "ack", "phase": "down", "seq": seq})
+                    else:
+                        if not down:
+                            await ws.send_json({
+                                "kind": "error",
+                                "code": "bad-state",
+                                "message": "move 前须先 start",
+                            })
+                            await ws.close(code=4400)
+                            break
+                        try:
+                            await asyncio.to_thread(_submit_step, "move", *values)
+                        except MobileAutoError as exc:
+                            # 结局未知不补发:上报后终止手势并尽力 UP
+                            await ws.send_json({
+                                "kind": "error",
+                                "code": type(exc).__name__,
+                                "message": str(exc),
+                            })
+                            await _cleanup()
+                            await ws.send_json({"kind": "ended", "reason": "error"})
+                            break
+                        last_point = values
+                        await ws.send_json({"kind": "ack", "phase": "move", "seq": seq})
+                elif mtype in ("end", "cancel"):
+                    if down:
+                        try:
+                            await asyncio.to_thread(_submit_step, "up", *last_point)
+                        except MobileAutoError as exc:
+                            await ws.send_json({
+                                "kind": "error",
+                                "code": type(exc).__name__,
+                                "message": str(exc),
+                            })
+                        else:
+                            await ws.send_json({"kind": "ack", "phase": "end", "seq": seq})
+                    down = False
+                    if guard is not None:
+                        guard.release()
+                        guard = None
+                    await ws.send_json({"kind": "ended", "reason": str(mtype)})
+                    break
+                else:
+                    await ws.send_json({
+                        "kind": "error",
+                        "code": "bad-message",
+                        "message": f"未知手势消息类型:{mtype!r}",
+                    })
+                    await ws.close(code=4400)
+                    break
+        except (WebSocketDisconnect, RuntimeError, KeyError, ValueError):
+            pass  # 断连:finally 尽力清理
+        finally:
+            await _cleanup()
+            with app.state.control_lock:
+                app.state.gesture_slots.discard(serial)
+
     app.state.static_dir = _STATIC_DIR
-    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
+    app.mount("/", _ViewerStaticFiles(directory=_STATIC_DIR, html=True), name="static")
     return app
 
 
@@ -1649,3 +2228,32 @@ def _origin_allowed(origin: str) -> bool:
     if parts.scheme not in ("http", "https"):
         return False
     return parts.hostname in ("127.0.0.1", "localhost", "::1")
+
+
+def _origin_strict(origin: str | None, host: str) -> bool:
+    """控制/直解信道的严格同源:scheme/host/port 与 Host 头全匹配。
+
+    手势注入与 H.264 码流比预览读取更敏感,回环"端口任意"规则不足
+    (任意本机页面可跨源连 WS)。缺 Origin(非浏览器客户端)按拒绝
+    处理;测试宿主 "testserver" 放行。
+    """
+    if not origin:
+        return False
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    hostname = parts.hostname
+    if hostname is None:
+        return False
+    if hostname == "testserver":
+        return True
+    if hostname not in ("127.0.0.1", "localhost", "::1"):
+        return False
+    netloc = "[::1]" if hostname == "::1" else hostname
+    port = parts.port
+    if port is None:
+        return host == netloc  # 无显式端口:Host 头同样无端口才同源
+    return host == f"{netloc}:{port}"

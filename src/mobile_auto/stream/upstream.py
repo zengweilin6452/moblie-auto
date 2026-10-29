@@ -25,6 +25,7 @@ import os
 import struct
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import StreamUnavailable
@@ -47,6 +48,98 @@ _SERVER_VERSION = "5.0.1"
 _START_TIMEOUT_SECONDS = 15.0
 _SEQ_LOCK = threading.Lock()
 _SEQ = 0  # 进程内通道序号:scid 与重启不复用
+_GENERATION_LOCK = threading.Lock()
+_GENERATIONS: dict[str, int] = {}  # serial → 通道代际;仅重建递增
+
+
+def _next_generation(serial: str) -> int:
+    with _GENERATION_LOCK:
+        gen = _GENERATIONS.get(serial, 0) + 1
+        _GENERATIONS[serial] = gen
+        return gen
+
+
+@dataclass(frozen=True)
+class EncodedPacket:
+    """一个完整编码包:config=Annex B SPS/PPS,session=会话尺寸,frame=访问单元。"""
+
+    kind: str  # "config" | "session" | "frame"
+    payload: bytes
+    key: bool
+    pts_us: int
+    width: int
+    height: int
+
+
+class EncodedSubscriber:
+    """有界编码包订阅:溢出即放弃(置位,由消费方终止);帧按关键帧门控。
+
+    offer 自泵线程调用,绝不阻塞;take 阻塞等待。门控规则:关键帧同步前
+    丢弃 delta 帧,config/session 包不受门控(供解码器配置与尺寸预告)。
+    """
+
+    def __init__(self, *, max_packets: int = 8, max_bytes: int = 1 << 20) -> None:
+        self._max_packets = max_packets
+        self._max_bytes = max_bytes
+        self._cond = threading.Condition()
+        self._packets: list[EncodedPacket] = []
+        self._bytes = 0
+        self._overflowed = False
+        self._closed = False
+        self._synced = False
+
+    @property
+    def overflowed(self) -> bool:
+        with self._cond:
+            return self._overflowed
+
+    @property
+    def closed(self) -> bool:
+        with self._cond:
+            return self._closed
+
+    def close(self) -> None:
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
+
+    def offer(self, packet: EncodedPacket) -> None:
+        """泵线程投递;溢出清空并置位,不再接收后续包。"""
+        with self._cond:
+            if self._closed or self._overflowed:
+                return
+            if packet.kind == "frame":
+                if packet.key:
+                    self._synced = True
+                elif not self._synced:
+                    return  # 关键帧同步前丢 delta
+            if (
+                len(self._packets) >= self._max_packets
+                or self._bytes + len(packet.payload) > self._max_bytes
+            ):
+                self._overflowed = True
+                self._packets.clear()
+                self._bytes = 0
+                self._cond.notify_all()
+                return
+            self._packets.append(packet)
+            self._bytes += len(packet.payload)
+            self._cond.notify_all()
+
+    def take(self, timeout: float) -> EncodedPacket | None:
+        """阻塞取包;超时或已关闭返回 None。"""
+        with self._cond:
+            deadline = time.monotonic() + timeout
+            while not self._packets:
+                if self._closed:
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._cond.wait(remaining)
+            packet = self._packets.pop(0)
+            self._bytes -= len(packet.payload)
+            return packet
 
 
 def _next_seq() -> int:
@@ -92,6 +185,7 @@ class UpstreamChannel:
             scid if scid is not None else encode_scid(self._host_mod, _next_seq())
         )
         self._sock_prefix = socket_name_for(self._scid)  # 语义对齐 wetest 通道属性
+        self._generation = _next_generation(serial)  # 通道重建代际(浏览器重同步)
         self._max_size = max_size
         self._bit_rate = bit_rate
         self._max_fps = max_fps
@@ -108,6 +202,10 @@ class UpstreamChannel:
         self._latest_size: tuple[int, int] | None = None
         self._decode_error: str | None = None
         self._pump_thread: threading.Thread | None = None
+        # 编码包订阅(浏览器直解):保留最近 config/session 供中途订阅回放
+        self._subs: list[EncodedSubscriber] = []
+        self._enc_config: bytes | None = None
+        self._enc_session: tuple[int, int] | None = None
 
     # ── 生命周期 ─────────────────────────────────────────────
 
@@ -118,6 +216,45 @@ class UpstreamChannel:
     @property
     def scid(self) -> int:
         return self._scid
+
+    @property
+    def generation(self) -> int:
+        """通道代际:每次重建递增(浏览器直解据此重同步)。"""
+        return self._generation
+
+    def subscribe_encoded(self) -> EncodedSubscriber:
+        """订阅编码包(浏览器直解用;仅 upstream 通道支持)。
+
+        已在流的通道:先回放最近 config/session,帧等下一关键帧;
+        start 前订阅则从流出生就接收,可捕获首个关键帧。
+        """
+        with self._lock:
+            sub = EncodedSubscriber()
+            if self._enc_config is not None:
+                w, h = self._enc_session or (0, 0)
+                sub.offer(EncodedPacket("config", self._enc_config, False, 0, w, h))
+            if self._enc_session is not None:
+                sub.offer(
+                    EncodedPacket(
+                        "session", b"", False, 0, *self._enc_session
+                    )
+                )
+            self._subs.append(sub)
+            return sub
+
+    def _dispatch_encoded(self, packet: EncodedPacket) -> None:
+        """泵线程分发;不阻塞、不抛错,已关闭订阅就地移除。"""
+        with self._lock:
+            subs = list(self._subs)
+        for sub in subs:
+            if sub.closed:
+                with self._lock:
+                    try:
+                        self._subs.remove(sub)
+                    except ValueError:
+                        pass
+                continue
+            sub.offer(packet)
 
     def healthy(self) -> bool:
         """通道可用性:已启动、泵线程存活、控制 socket 未断。"""
@@ -280,6 +417,12 @@ class UpstreamChannel:
                             raise ValueError("视频流首元包不是会话元包")
                         meta = parse_session_meta(buffer[:12])
                         self._screen = (meta.width, meta.height)
+                        self._enc_session = (meta.width, meta.height)
+                        self._dispatch_encoded(
+                            EncodedPacket(
+                                "session", b"", False, 0, meta.width, meta.height
+                            )
+                        )
                         buffer = buffer[12:]
                         continue
                     if len(buffer) < 12:
@@ -293,6 +436,12 @@ class UpstreamChannel:
                             break
                         meta = parse_session_meta(buffer[:12])
                         self._screen = (meta.width, meta.height)
+                        self._enc_session = (meta.width, meta.height)
+                        self._dispatch_encoded(
+                            EncodedPacket(
+                                "session", b"", False, 0, meta.width, meta.height
+                            )
+                        )
                         buffer = buffer[12:]
                         continue
                     size = struct.unpack(">i", buffer[8:12])[0]
@@ -304,7 +453,21 @@ class UpstreamChannel:
                         # CONFIG 包 = 解码器 extradata(SPS/PPS);直接 decode
                         # 会报 InvalidDataError(单包非完整 NAL,真机实证)
                         self._set_extradata(packet.payload)
+                        self._enc_config = packet.payload
+                        w, h = self._screen or (0, 0)
+                        self._dispatch_encoded(
+                            EncodedPacket("config", packet.payload, False, 0, w, h)
+                        )
                         continue
+                    self._dispatch_encoded(
+                        EncodedPacket(
+                            "frame",
+                            packet.payload,
+                            packet.key_frame,
+                            packet.pts_us,
+                            *(self._screen or (0, 0)),
+                        )
+                    )
                     try:
                         decoded = decoder.decode(av.Packet(packet.payload))
                     except av.error.InvalidDataError:
@@ -360,6 +523,12 @@ class UpstreamChannel:
         return UpstreamChannel._sock_alive(sock)
 
     # ── 画面 ─────────────────────────────────────────────────
+
+    @property
+    def has_frame(self) -> bool:
+        """是否已有解码帧:server 已起但首个关键帧未到时为 False(预热期)。"""
+        with self._lock:
+            return self._latest_jpeg is not None
 
     def latest_frame(self) -> tuple[bytes, int, int]:
         """解码线程的最新帧,JPEG 编码;返回 (jpeg, width, height)。"""
@@ -420,6 +589,16 @@ class UpstreamChannel:
         y = min(max(int(y), 0), height)
         self._send_control(encode_touch(action, x, y, width, height))
 
+    def touch_down(self, x: int, y: int) -> None:
+        """手势分解入口(与 wetest 通道同形):连续手势逐段注入。"""
+        self.touch(x, y, proto.ACTION_DOWN)
+
+    def touch_move(self, x: int, y: int) -> None:
+        self.touch(x, y, proto.ACTION_MOVE)
+
+    def touch_up(self, x: int, y: int) -> None:
+        self.touch(x, y, proto.ACTION_UP)
+
     def tap(self, x: int, y: int) -> None:
         down, up = tap_sequence(x, y, *self.screen_size())
         self._send_control(down)
@@ -471,6 +650,9 @@ class UpstreamChannel:
     def stop(self) -> None:
         """关闭连接并结束 server;幂等。释放不回滚已注入的操作。"""
         with self._lock:
+            for sub in self._subs:
+                sub.close()
+            self._subs.clear()
             self._teardown()
             self._started = False
 
@@ -501,4 +683,9 @@ class UpstreamChannel:
             selfheal.LIVE_PREFIXES.discard(self._sock_prefix)
 
 
-__all__ = ["UpstreamChannel", "upstream_asset"]
+__all__ = [
+    "EncodedPacket",
+    "EncodedSubscriber",
+    "UpstreamChannel",
+    "upstream_asset",
+]

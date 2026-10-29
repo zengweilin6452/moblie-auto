@@ -52,6 +52,15 @@ h2 small { color: #8b94a3; font-weight: 400; font-size: 12px; }
   height: 100%;
   cursor: crosshair;
 }
+/* H.264 直解档:canvas 与 img 互斥显示,布局约束与 img 一致 */
+#video-canvas {
+  display: none;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+#stage.h264 #video-canvas { display: block; }
+#stage.h264 #preview { display: none; }
 #overlay { position: absolute; inset: 0; pointer-events: none; }
 #overlay div { position: absolute; border: 2px solid #f0b429; box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
 #overlay .tree-box { border-color: #7fb2ff; }

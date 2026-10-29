@@ -502,3 +502,247 @@ adb -s $serial pull /sdcard/tree-orig.xml artifacts/probe-tree-orig.xml
   真机复跑未执行;84cb2c4e(Android 17)当前离线,双机对照仍为待补项。
   现有 `tests/device` 用例在无设备时 skip,未弱化任何断言。
 
+
+## web-preview-experience(2026-10-28:浏览器直解视频与单操作者控制)
+
+规格:`.scratch/web-preview-experience/spec.md`;工单 01–06。首轮为合成
+(单测/集成)验证记录;真机性能与浏览器场景见文末「真机验收(2026-10-29)」。
+
+### 已验证(全部自动化,本轮新鲜证据)
+
+- 单元全量:`PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -m pytest tests/unit`
+  → **622 passed, 1 skipped**(device 标记无真机跳过)。新增:
+  `test_videostream.py`(27B 线格式往返/越界拒绝)、
+  `test_upstream_subscriber.py`(关键帧门控/溢出/close 解阻塞/代际递增/
+  订阅回放 config+session)、`test_viewer_video_ws.py`(严格同源拒绝、
+  bad-hello、非 upstream 后端拒绝、config/session/frame 中继、溢出状态、
+  通道不健康状态、capabilities 探测)、`test_viewer_gesture_ws.py`
+  (同源/凭据、DOWN/MOVE/UP 序列与像素换算、seq 单调、双手势拒绝、
+  断连尽力 UP 并释放租约、2s 空闲超时清理)、
+  `test_control_injection.py`(重写为凭据流:无凭据 400/错误凭据 403/
+  领用幂等/他人 409/心跳续期与 TTL 撤权/节流/租约 409)。
+- 前端纯函数 node 套件:`video_player.test.js`(27B 头解析、codec 串
+  avc1.PPCCLL 推导、畸形输入拒绝),已挂入 `test_dual_pane_logic.py`。
+- ruff:改动文件与新文件 0 告警。
+
+### 环境相关既有失败(与本次改动无关,基线复现确认)
+
+- Windows GBK 控制台下,`test_debug_viewer` / `test_pytest_plugin` /
+  `test_pool_plugin` 的子进程输出按 GBK 解码失败;带
+  `PYTHONIOENCODING=utf-8` 全绿。基线(stash 本次改动)同样失败。
+- `test_debug_viewer::test_start_serves_status_then_stop_closes_port`
+  整跑偶发端口残留,单跑必过,与本次改动无关。
+- 已顺手修复:`test_dual_pane_logic.py` 的 node 子进程改为显式 UTF-8
+  解码(此前 GBK 环境必失败)。
+
+### 未执行范围(首轮)
+
+- 真机性能门槛首轮未测(Chrome/Edge ≥18fps 中位、点击回显 p95 ≤500ms、
+  首帧 ≤2s),已于 2026-10-29 补齐,见下节。
+- 浏览器端到端交互首轮未经真实浏览器验证;本轮已用 Chrome 156 与
+  Edge(Chromium)实测视频档解码渲染与手势点击。
+- 旧无凭据客户端的"明确拒绝"已由单测覆盖(400 control-credential-
+  required),但无真实旧客户端回归。
+
+## 真机验收(2026-10-29:web-preview-experience)
+
+环境:设备 `749622c9`(1080×2400,USB);后端 `stream_backend=upstream`
+(scrcpy-server 5.0.1,`max_size=1080 max_fps=20 video_bit_rate=4000000`);
+服务端 `.venv/Scripts/python.exe -m mobile_auto.cli serve --config
+tests/device/local.toml --port 8799`;测量探针
+`.scratch/web-preview-experience/acc_harness.js`(patch
+`CanvasRenderingContext2D.drawImage`,只统计 `#video-canvas`;画面变化用
+24×54 降采样灰度均差 >1.5 判定)。
+
+### 门槛结果(Chrome 与 Edge 均达标)
+
+| 项 | Chrome 156 | Edge(Chromium) | 门槛 |
+|---|---|---|---|
+| 30s 连续动态画面绘制 fps(中位) | 20(mean 20,min 19,max 21) | 20(mean 20,min 20,max 20) | ≥18 |
+| 30 次可见变化点击 p95 | 460ms(中位 415.5,max 511.7) | 438.5ms(中位 408.5,max 464.7) | ≤500 |
+
+- fps 上限即服务端 `max_fps=20`;两引擎 30 个 1 秒桶都稳定在 20,无掉帧段。
+  场景为设置列表连续上下滚动(adb swipe 循环),非 JPEG 回退帧凑数。
+- 点击测量:设置首页 WLAN 行(归一化 0.5,0.46);每次 pointerdown 记录
+  起点,首个灰度均差 >1.5 的绘制帧为回显帧,随后 adb BACK 复位;
+  30/30 次都产生可见变化(diff 2.5–5.3)。Chrome 首个样本 511.7ms 是
+  首次进入 WLAN 页(activity 冷启动)的离群值。
+
+### 已执行的其他场景
+
+- **首次出流**:视频 WS 先挂通道(出生订阅)时 ready≈0.9s、首个关键帧
+  ≈0.9s,页面加载后约 1.4s 切到 Canvas(486×1080),在 2s 预算内。
+- **旋转**:设备浏览器横屏(1080×486)→ 竖屏(486×1080),canvas 与
+  stage 跟随重设,帧持续,未回退 JPEG。
+- **熄屏/亮屏**:熄屏后编码器停止出帧,画面停在末帧且无错误提示;
+  亮屏并滚动后帧恢复。
+- **杀 server 恢复**:设备端 `pkill -f 'com.genymobile.scrcpy.Server'`
+  后视频 WS 报"视频通道不健康",前端回退 JPEG 档(截图轮询持续出帧,
+  提示"H.264 直解中断,回退 JPEG 档"),画面不黑屏。
+
+### 本轮复跑的自动验证(新鲜证据)
+
+- 单元全量:`pytest tests/unit -q` → exit 0,623 项(622 passed,
+  1 skipped,device 标记无真机跳过)。
+- 设备:`pytest tests/device/test_viewer_stream_device.py
+  tests/device/test_control_injection_device.py --mobile-config
+  tests/device/local.toml` → **6 passed**(含动态画面 fps、杀 server
+  回退与恢复、手势 WS 全链路拖拽)。
+- `ruff check src tests` → All checks passed;`node --test
+  tests/unit/video_player.test.js` → 1 passed。
+
+### 验收中发现并修复的缺陷
+
+1. **预热死循环**:`_build_stream_frame` 把"视频流尚无解码帧"当作通道
+   损坏 → invalidate → 重建,每次预览轮询都重开 server。修复:
+   `UpstreamChannel.has_frame` + 预热期不回收;回归
+   `test_warmup_channel_not_recycled_and_recovers`。
+2. **浏览器内控制全线失效**:`app.js` 从未定义 `normCoords`,
+   pointerdown 直接 ReferenceError。已补。
+3. **H.264 档首帧体验**:原实现立即关 JPEG 并显示空 canvas。改为 JPEG
+   优先 + 服务端 `ready` 起算 2s 预算 + 首个 H.264 帧**实际绘制**后
+   才切 canvas;滞后角标只在 JPEG 档显示。
+4. **设备用例适配上游后端**:fps 用例改用滚动制造动态画面并按内容去重
+   计数;杀 server 用例按 `scid=` 匹配上游 cmdline。
+
+### 未解决/需决策
+
+1. **晚到视频订阅缺关键帧:已按用户授权修复**,见下节。此前观测为
+   出生订阅收到首个 IDR,之后 13 秒动态画面未见第二个 IDR;该窗口
+   不能证明编码器永远不发关键帧,但足以否定接入时等待周期 IDR 的
+   2s 预算保证。现在新视频订阅重建通道,先挂订阅再启动。
+2. **连接超限时计数失配:已修复**,见下节。JPEG/H.264 两条路由均在
+   注册前拒绝超限请求,只对已注册连接执行释放。
+3. **静态资源缓存策略:已修复**,见下节。页面、JS、CSS 使用
+   `Cache-Control: no-cache`,保留 ETag 与 304,每次使用缓存前重新验证。
+   已打开的旧页面仍需重新加载,服务端不能主动替换其正在执行的脚本。
+4. **规格"连续 3 秒未收到新包算滞后,暂停控制"与上游变化驱动编码
+   冲突**:静屏时本就不出包,按字面实现会误判滞后。本轮未实现该规则,
+   新鲜度按"最近一次成功取帧"判断。
+
+### 仍未执行
+
+- Firefox:本机未安装,兼容/降级矩阵未验证。
+- 双设备:仅一台在线(749622c9)。
+- 慢客户端(限速/弱网)未测;双浏览器控制互斥的浏览器侧完整验证未做。
+  关键帧修复后已验证同浏览器第二页面能进入 H.264,原页面回退 JPEG;
+  控制互斥仍由单测覆盖。
+
+### 关键帧重订阅修复复验(2026-10-29)
+
+- 用户选定方案:没有可回放完整解码链时重建通道。当前中继只缓存
+  config/session,因此 `get_for_video()` 每次在同一启动锁内停旧通道,
+  先订阅再启动,捕获新的启动 IDR;无需新增依赖或缓存 GOP。
+- `UpstreamChannel.stop()` 同时关闭旧编码订阅,唤醒阻塞消费者。
+  同设备已有视频客户端会短暂中断并回退 JPEG;这不是多页面同时
+  保持 H.264 的实现。规格和工单 02 已同步该取舍。
+- 红→绿:修复前三个重订阅用例明确失败(缺启动关键帧/复用旧通道),
+  停通道关闭订阅用例亦明确失败;修复后通过。另补真实 WS 重连中继。
+- 单元全量:627 passed,1 skipped(补 WS 重连用例前);
+  最终定向回归 **40 passed**,覆盖视频 WS、编码订阅、监督器和 JPEG 流。
+- 真机 `test_viewer_stream_device.py --mobile-config tests/device/local.toml`:
+  **3 passed**;含 JPEG 先起流后连续两次视频订阅均在通道启动返回
+  (对应 ready)后 2s 内收到有效关键帧,原有动态帧率及杀 server 恢复。
+- 独立验收浏览器:首次打开、刷新、第二页面均实际绘制
+  H.264 Canvas(486×1080);第二页面重建后原页面显示 JPEG,
+  `naturalWidth > 0`,并提示视频通道不健康。未扩大声称跨浏览器矩阵。
+- ruff:本轮修改的实现与测试文件检查通过。全量单测有既有
+  Starlette 弃用和错误协议头用例线程异常警告,退出码为 0。
+- 本轮未复测 30s fps/30 次点击 p95,上面的性能数字属于修复前验收;
+  本轮验证范围为订阅、重建、关键帧与浏览器恢复。
+
+### 连接计数与静态资源缓存修复(2026-10-29)
+
+- 根因:JPEG/H.264 两条预览路由在注册前判断连接上限,但超限早退
+  仍进入无条件释放的 finally;四个活跃连接收到第五个请求后计数
+  从 4 错减为 3。修复将拒绝放到注册/清理事务之前,成功注册后才
+  成对增减设备计数及应用计数;检查与注册之间无 await。
+- 静态挂载使用 `_ViewerStaticFiles`,对静态响应设置
+  `Cache-Control: no-cache`;覆盖首页、index.html、JS、CSS 的 GET、
+  HEAD 和 304。继续使用框架 ETag/Last-Modified 及条件请求,
+  文件修改后旧 ETag 请求返回 200 和新内容,无需每次重复传输未变文件。
+- 回归红→绿已执行:两个路由的超限计数用例修复前均复现 3≠4;
+  六个缓存用例修复前均因缺缓存头失败。修复后视频 WS 与 HTTP API
+  两文件 **38 passed**;同时覆盖连续超限拒绝、混合四连接、正常
+  断开后复用名额和 bad-hello 仅释放自身名额。
+- 同类排查:全部两个预览计数入口均已修复,唯一静态挂载已覆盖;
+  手势 WS 使用单独的 gesture_slots,不走预览连接计数。
+- 全量单元 **637 passed,1 skipped,2 warnings**,退出码 0;警告为
+  既有 Starlette 弃用和错误协议头用例线程异常。ruff 与差异格式
+  检查通过。采用 TestClient 验证 HTTP/WS 实际响应,
+  未运行浏览器升级流程或真机性能复测。
+
+
+### 画面新鲜度与只读门控(2026-10-29)
+
+- 规格偏差(实测证据):spec 原写"连续 3 秒未收到新编码包算滞后,
+  暂停控制"。真机实测该编码器**静屏时完全不出包**——连续滚动 13 秒
+  共 183 帧,静置期间 0 帧;出生订阅 905ms 收到 flags=1 首帧。按包
+  到达计时会把静屏误判为滞后,操作者再也无法点按解冻,规则不可按
+  字面实施。已把 spec 该句改为可执行契约并注明修正来源。
+- 实施:新增 `_require_live_picture(manager, channel)`,判定"通道存活
+  + 预览不是 u2 回退"。`_build_stream_frame` 每次出帧记录来源,
+  `_ChannelManager.preview_source()` 返回 (来源, 单调时间);最近一次
+  预览帧仍是 `u2-fallback` 且距今 ≤3 秒时,`touch`/`swipe`/`key` 与
+  手势 `start`/`move` 返回 503 只读,scrcpy 画面恢复后自动解除。
+  `wake` 与手势 `up` 豁免:前者是恢复动作,后者必须发出,否则设备
+  停在按住状态。没有预览客户端时没有可被误导的画面,不额外限制。
+- 设计取舍:先按"已有解码帧"实现,真机设备用例 4 例立即 503 失败
+  (注入本就先于任何预览启动通道),说明该判据把冷启动的合法注入也
+  挡掉;改为按"操作者看到的画面来源"判定,既覆盖 spec 的 u2 只读
+  要求,又不动冷启动路径。
+- 回归红→绿:三个 u2 只读用例(HTTP 三接口、手势 start、手势中途
+  move)在停用判据时全部失败(注入成功 / 收到 `ack`),恢复后通过。
+  另有静屏用例(3.1 秒无包仍可点按,防止后续误加包到达计时)、
+  u2 窗口到期恢复用例、`wake` 豁免用例,均为守护性用例,非红→绿。
+- 覆盖范围:控制注入 21 例 + 手势 WS 9 例 **29 passed**;真机
+  `test_control_injection_device.py` + `test_viewer_stream_device.py`
+  **7 passed**(确认冷启动注入未被门控破坏);全量单元两次整跑为
+  **643 passed,1 skipped** 与 **642 passed,1 failed**(失败项是已记录的
+  偶发端口残留 `test_debug_viewer::test_start_serves_status_then_stop_closes_port`,
+  单跑 6 passed,与本次改动无关)。ruff 与 `git diff --check` 通过。
+- 残余风险:视频 socket 静默停摆但控制 socket 仍存活时,健康检查
+  判不出(包到达计时本可覆盖)。change-driven 编码器下要彻底消除需
+  设备端心跳,超出"不替换 Android 服务"的范围,故记录不实施。
+
+### 关键帧修复后的性能复测(2026-10-29)
+
+同一设备与配置(`max_fps=20`),场景为设置列表 adb 连续上下滚动 40s,
+30s 测量窗口完全落在滚动期内(先起滚动再开窗口);点击为设置首页
+WLAN 行(归一化 0.5,0.46),每次 pointerdown 记起点、首个灰度均差
+>1.5 的绘制帧为回显帧,随后 adb BACK 复位。
+
+| 项 | Chrome 156 | Edge 156.0.4314.50 | 门槛 |
+|---|---|---|---|
+| 30s 绘制 fps(中位/均值/min/max) | 20 / 20 / 19 / 21 | 20 / 20 / 20 / 20 | ≥18 |
+| 30 次可见变化点击 p95 | 477.3ms | 447.9ms | ≤500 |
+| 点击回显 中位 / min / max | 415.7 / 384.9 / 483.8ms | 402.8 / 365.4 / 468.5ms | — |
+
+- 两引擎 30 个 1 秒桶全部 ≥19,无掉帧段;fps 上限即服务端 `max_fps=20`。
+- 30/30 次点击都产生可见变化(diff 2.4–6.5),无一次靠静态帧凑数;
+  两次实测最大值均 <500ms,未出现首轮 Chrome 那种 511.7ms 冷启动离群值。
+- 首轮测量曾把窗口开在滚动启动前,出现 0/8/3/7 的前置空桶(中位仍 20);
+  该轮已作废重测,上表为滚动期内重新取的干净窗口。
+
+### 双浏览器控制互斥(2026-10-29,浏览器实测)
+
+同一服务端、同一设备,页面 A(Chrome 标签)领用控制权后:
+
+- 同浏览器第二标签与**另一个独立 Chrome 进程**分别尝试启用控制,均被拒:
+  `切换失败 control-busy:其他操作者持有该设备的控制权`,勾选自动回退,
+  `#stage` 未进入 control-mode。
+- 无凭据页面直接 `POST /api/v1/input/touch` 返回 400
+  `control-credential-required`,未发生注入。
+- 页面 A 在两次抢占尝试后仍持有控制:1s 心跳未被拒、提示保持"控制中";
+  实测 `viewer.wake` 与一次手势(down/up @243,540)在动作流水中
+  `outcome: ok`,证明凭据仍可用。
+- 页面 A 离开(导航到 about:blank)后 7s 内,另一浏览器页面即可领用
+  控制并进入 control-mode,验证失联撤权与可重新领用。
+
+### 仍未执行(环境不具备,如实记录)
+
+- **Firefox**:本机未安装,兼容/降级矩阵未执行。现有回退逻辑为
+  能力探测失败即保持 JPEG,未取得 Firefox 实测证据。
+- **双设备**:仅 `749622c9` 在线,跨设备并发与操作者隔离未实测。
+- **慢客户端/弱网**:未构造 1MiB/8 包积压与发送超时;该路径仅有单测
+  (溢出→状态+关闭)覆盖,无真实弱网证据。

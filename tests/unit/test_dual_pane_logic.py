@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 _UNIT_DIR = Path(__file__).parent
-_NODE_SUITES = ("dual_pane_logic.test.js", "snapshot_freeze.test.js")
+_NODE_SUITES = (
+    "dual_pane_logic.test.js",
+    "snapshot_freeze.test.js",
+    "video_player.test.js",
+)
 
 
 def _run_node_suite(name: str) -> None:
@@ -15,7 +19,12 @@ def _run_node_suite(name: str) -> None:
     if node is None:
         pytest.skip("node 不可用,前端纯函数单测未执行")
     result = subprocess.run(
-        [node, str(_UNIT_DIR / name)], capture_output=True, text=True, timeout=60
+        [node, str(_UNIT_DIR / name)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",  # node 套件输出为 UTF-8;Windows 默认 GBK 会解码崩溃
+        errors="replace",
+        timeout=60,
     )
     assert result.returncode == 0, f"node 单测失败:\n{result.stdout}\n{result.stderr}"
     assert "tests passed" in result.stdout
