@@ -30,6 +30,8 @@ src/mobile_auto/
 ├── config.py              # MobileConfig 与 load_config(显式参数 > 环境变量 > TOML > 默认)
 ├── cli.py                 # 命令行入口:doctor / serve
 ├── pool.py                # 设备池:租约目录即协调器(非阻塞抢占/产物分目录/运行状态)
+├── _perf_gate.py          # mobile_perf DeviceGate 适配器(整生命周期租约 ↔ 短事务借用;
+│                          #   未安装 mobile_perf 时不参与其余能力)
 │
 ├── core/                  # ── 执行核心(设备访问必经 session 串行队列)──
 │   ├── session.py         #   DeviceSession:状态机、操作队列与取消语义、
@@ -64,11 +66,12 @@ src/mobile_auto/
 │
 └── viewer/                # ── 本机网页调试服务(仅监听回环)──
     ├── app.py             #   FastAPI:快照/拾取/模板/验证/设备档案/占用运行态/
-    │                      #   证据浏览端点、预览 WS、直接控制(租约门控)
+    │                      #   证据浏览端点、JPEG 与 H.264 预览 WS、控制权与手势 WS
+    ├── videostream.py     #   视频中继线格式:27B 头(config/session/frame/关键帧位)
     ├── server.py          #   --debug-viewer 后台服务(controller 进程,端口探测)
     ├── store.py           #   快照库(容量驱逐与冻结引用)
     ├── candidates.py      #   拾取候选生成(五种原生定位 + XPath)
-    └── static/            #   前端:index/app/coords/evidence/runs/快照冻结
+    └── static/            #   前端:index/app/video_player/coords/evidence/runs/快照冻结
 ```
 
 ```
@@ -83,7 +86,7 @@ examples/
 tests/
 ├── unit/                  # 单元(伪造设备/伪造通道,不碰 adb)+ node 纯函数测试
 ├── contract/              # 15 方法契约核对
-├── integration/           # 两进程租约争用
+├── integration/           # 两进程租约争用 + mobile_perf 门禁适配器
 └── device/                # 真机用例(--mobile-config 门控;local.toml 不入库)
 ```
 
@@ -104,11 +107,16 @@ tests/
   并发放内存凭据,注入须经 `X-Viewer-Control` 头携带(无凭据旧客户端明确拒绝);
   约 1s 心跳(`/api/v1/control/heartbeat`)续期,失联 5s 懒撤权;他人持有时领用
   409、不抢占;注入经租约门控。拖动类连续操作走 `WS /api/v1/input/gesture`
-  (严格同源,租约跨消息持有,断连尽力 UP)。
+  (严格同源,租约跨消息持有,断连尽力 UP)。画面来源也参与门控:预览回退
+  u2 截图时只读(3 秒窗口内 `touch/swipe/key` 与手势 `start/move` 返回 503),
+  亮屏与手势 UP 豁免——前者是恢复动作,后者必须发出以免设备停在按住状态。
 - **浏览器直解视频档**(可选,H.264):`GET /api/v1/preview/capabilities` 探测
   (`stream_backend=upstream` 且上游 server 资产在位时 `h264_ws=true`);
   `WS /api/v1/preview/video` 下发 27B 二进制封装的 H.264 Annex B 码流,前端
   WebCodecs 直解;不可用时前端自动回退 JPEG 预览档(原 `/api/v1/preview` 不变)。
+  部分设备只在启动时发一次 IDR,故新视频订阅先挂订阅再重建通道以取得首关键帧
+  (同设备旧视频客户端短暂回退 JPEG)。真机门槛:Chrome/Edge 30s 绘制 20fps、
+  30 次点击 p95 ≤500ms,数据见 `docs/validation.md`。
 - **viewer 数据一致前提**:serve/--debug-viewer 与 pytest 运行共用同一 `--mobile-config`
   (artifacts 目录一致),占用/运行态/证据才能互相可见。
 - 许可证:上游 scrcpy server v5.0.1 为 Apache-2.0(随包,PROVENANCE.md 登记);
